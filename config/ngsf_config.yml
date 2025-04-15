@@ -1,0 +1,6 @@
+bank_dir: /path/to/bank_dir
+output_dir: /path/to/output_dir
+Alam_high: 2.0
+Alam_low: -2.0
+Alam_interval: 0.2
+epoch_low: 0
