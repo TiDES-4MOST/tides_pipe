@@ -9,23 +9,66 @@ from .module import Module
 import json
 import matplotlib.pyplot as plt
 import random
+import hashlib
 
 class DataIngestion(Module):
     def __init__(self, config):
         self.config = config
 
+    @staticmethod
+    def _json_default(o):
+        import numpy as np
+        from datetime import datetime
+        if isinstance(o, np.generic):
+            return o.item()
+        if isinstance(o, np.ndarray):
+            return o.tolist()
+        if isinstance(o, (datetime, )):
+            return o.isoformat()
+        if isinstance(o, (bytes, bytearray)):
+            return o.decode("utf-8", errors="ignore")
+        return str(o)
+
+    # Helper: compute deterministic qmost_id from tides_id + file basename
+    def _compute_qmost_id(self, tides_id: str, source_file: str) -> int:
+        s = f"{tides_id}|{os.path.basename(source_file)}"
+        h = hashlib.sha1(s.encode("utf-8")).hexdigest()
+        return int(h[:15], 16)  # < 2^63
+
+    def _obj_nme_to_bigint(self, val) -> int:
+        """
+        Coerce FIBMETATAB.OBJ_NME to a BIGINT:
+        - handles bytes/str
+        - accepts numeric strings (including scientific notation)
+        """
+        if val is None:
+            raise ValueError("OBJ_NME is None")
+        if isinstance(val, bytes):
+            val = val.decode('ascii', errors='ignore')
+        s = str(val).strip()
+        if s == '':
+            raise ValueError("Empty OBJ_NME")
+        try:
+            return int(s)
+        except ValueError:
+            # try float-like (e.g. 1.23e+06)
+            return int(float(s))
+
     def process_night(self, night):
         # Use paths from the config file
+        self.logger.info(f"Starting data ingestion for night: {night}")
         deliveries_dir = self.config['data_paths']['deliveries_dir']
         spectra_dir = self.config['data_paths']['spectra_dir']
         archive_dir = self.config['data_paths']['archive_dir']
-
         night_dir = os.path.join(deliveries_dir, night)
+        self.logger.info(f"Looking for deliveries in nightly deliveries directory: {night_dir}")
         spectra_night_dir = os.path.join(spectra_dir, night)
+        self.logger.info(f"Spectra will be saved in spectra directory: {spectra_night_dir}")
         archive_night_dir = os.path.join(archive_dir, night)
+        self.logger.info(f"Archives will be saved in archive directory: {archive_night_dir}")
 
         if not os.path.exists(night_dir):
-            self.logger.info(f"No data found for night {night}.")
+            self.logger.info(f"No data found for night {night} in ")
             return
 
         files = [f for f in os.listdir(night_dir) if f.endswith(".fits")]
@@ -50,7 +93,7 @@ class DataIngestion(Module):
             except Exception as e:
                 self.logger.error(f"Error processing {file}: {e}")
 
-        self.archive_files(night_dir, archive_night_dir)
+        #self.archive_files(night_dir, archive_night_dir) #TODO make this safe before enabling
         self.set_done(True)
         return obj_names
 
@@ -58,79 +101,105 @@ class DataIngestion(Module):
         self.logger.info(f"Parsing data from {file_path}")
         obj_names = []
 
-        # Check if test mode is enabled
-        if self.config['data_ingestion'].get('test', False):
+        # Always parse FITS file contents (no test mode)
+        with fits.open(file_path, memmap=False) as hdulist:
+            fibinfodat = hdulist['FIBMETATAB'].data
+            specdata = hdulist[2].data
+            specheader = hdulist[2].header
+
+            # Build wavelength array from header keywords (linear WCS)
             try:
-                tides_db_conn = self.connect_to_db("tides_db")
-                if not tides_db_conn:
-                    self.logger.error("Failed to connect to tides_db for retrieving tides_id")
-                    return obj_names
+                n = int(str(specheader['TDIM1']).strip().strip('()'))
+            except Exception:
+                n = specdata['FLUX'].shape[1] if specdata is not None else 0
+            crval1 = specheader.get('1CRVL1') or specheader.get('CRVAL1')
+            cdelt1 = specheader.get('1CDLT1') or specheader.get('CDELT1') or specheader.get('CD1_1')
+            crpix1 = specheader.get('1CRPX1') or specheader.get('CRPIX1', 1.0)
+            if crval1 is None or cdelt1 is None or n == 0:
+                self.logger.error("Missing wavelength WCS keywords; cannot build wavelength axis")
+                return obj_names
+            pix = np.arange(1, n + 1, dtype=float)
+            wave = crval1 + (pix - float(crpix1)) * float(cdelt1)
 
-                try:
-                    cursor = tides_db_conn.cursor()
-                    cursor.execute("SELECT tides_id FROM tides_cand ORDER BY RANDOM() LIMIT 1")
-                    tides_id = cursor.fetchone()[0]
-                    obj_name = tides_id  # Use tides_id as obj_name in test mode
-                    obj_names.append(obj_name)
-
-                    spectrum_file = os.path.join(spectra_night_dir, f"{obj_name}_spectrum.txt")
-                    thumbnail_file = os.path.join(spectra_night_dir, f"{obj_name}_thumbnail.png")
-
-                    # Save dummy spectrum data
-                    with open(spectrum_file, 'w') as f:
-                        f.write("# Wavelength Flux\n")
-                        for w in range(4000, 8000, 10):  # Dummy wavelength range
-                            f.write(f"{w} {random.uniform(0, 100)}\n")  # Random flux values
-
-                    # Generate and save dummy thumbnail
-                    self.generate_thumbnail(range(4000, 8000, 10), [random.uniform(0, 100) for _ in range(400)], thumbnail_file)
-
-                    self.logger.info(f"Saved dummy spectrum to {spectrum_file} and thumbnail to {thumbnail_file}")
-                except Exception as e:
-                    self.logger.error(f"Failed to retrieve tides_id or process file in test mode: {e}")
-                finally:
-                    tides_db_conn.close()
+            # Preload valid tides_ids from tides_cand to ensure OBJ_NME matches
+            valid_ids = set()
+            tides_db_conn = self.connect_to_db("tides_db")
+            if not tides_db_conn:
+                self.logger.error("Failed to connect to tides_db to validate tides_id")
+                return obj_names
+            try:
+                cur = tides_db_conn.cursor()
+                cur.execute("SELECT tides_id FROM tides_cand")
+                valid_ids = {int(r[0]) for r in cur.fetchall()}
             except Exception as e:
-                self.logger.error(f"Error processing FITS file in test mode: {e}")
-        else:
-            # Normal mode: Parse FITS file contents
-            with fits.open(file_path, memmap=False) as hdulist:
-                fibinfodat = hdulist['FIBMETATAB'].data
-                specdata = hdulist[2].data
-                specheader = hdulist[2].header
-                wave = specheader['1CRVL1'] + (1 + np.arange(0, float(specheader['TDIM1'].strip(' ').strip('(').strip(')')))) - specheader['1CRPX1'] * specheader['1CDLT1']
-                
-                for counter, (flux, fluxerr, qual) in enumerate(zip(specdata['FLUX'], specdata['ERR'], specdata['QUAL'])):
-                    try:
-                        meta = fibinfodat[counter]
-                        obj_name = meta['OBJ_NME']
-                        obj_names.append(obj_name)
-                        
-                        spectrum_file = os.path.join(spectra_night_dir, f"{obj_name}_spectrum.txt")
-                        metadata_file = os.path.join(spectra_night_dir, f"{obj_name}_metadata.txt")
-                        thumbnail_file = os.path.join(spectra_night_dir, f"{obj_name}_thumbnail.png")
-                        
-                        # Save spectrum data
-                        with open(spectrum_file, 'w') as f:
-                            f.write("# Wavelength Flux Error Quality\n")
-                            for w, fl, fe, q in zip(wave, flux, fluxerr, qual):
-                                f.write(f"{w} {fl} {fe} {q}\n")
-                        
-                        # Save metadata
-                        with open(metadata_file, 'w') as f:
-                            f.write("# Metadata\n")
-                            for name in fibinfodat.names:
-                                f.write(f"# {name}: {meta[name]}\n")
-                        
-                        # Generate and save thumbnail
-                        self.generate_thumbnail(wave, flux, thumbnail_file)
-                        
-                        self.logger.info(f"Saved spectrum to {spectrum_file}, metadata to {metadata_file}, and thumbnail to {thumbnail_file}")
+                self.logger.error(f"Could not fetch tides_cand ids: {e}")
+            finally:
+                tides_db_conn.close()
 
-                        # Update tides_spec with metadata
-                        self.update_tides_spec(obj_name, meta, spectrum_file, thumbnail_file)
-                    except Exception as e:
-                        self.logger.error(f"Error processing spectrum {counter} in file {file_path}: {e}")
+            # Iterate all spectra in the file
+            for counter, (flux, fluxerr, qual) in enumerate(zip(specdata['FLUX'], specdata['ERR_FLUX'], specdata['QUAL'])):
+                try:
+                    meta = fibinfodat[counter]
+                    obj_id = self._obj_nme_to_bigint(meta['OBJ_NME'])
+                    if obj_id not in valid_ids:
+                        self.logger.warning(f"OBJ_NME {obj_id} not found in tides_cand; skipping.")
+                        continue
+                    obj_names.append(str(obj_id))
+
+                    # Filepaths use the tides_id (OBJ_NME)
+                    spectrum_file = os.path.join(spectra_night_dir, f"{obj_id}_spectrum.txt")
+                    metadata_file = os.path.join(spectra_night_dir, f"{obj_id}_metadata.txt")
+                    thumbnail_file = os.path.join(spectra_night_dir, f"{obj_id}_thumbnail.png")
+
+                    # Save spectrum data (Wavelength Flux Error Quality)
+                    with open(spectrum_file, 'w') as f:
+                        f.write("# Wavelength Flux Error Quality\n")
+                        for w, fl, fe, q in zip(wave, flux, fluxerr, qual):
+                            f.write(f"{w} {fl} {fe} {q}\n")
+
+                    # Save metadata snapshot from fiber table
+                    with open(metadata_file, 'w') as f:
+                        f.write("# Metadata\n")
+                        for name in fibinfodat.names:
+                            try:
+                                f.write(f"# {name}: {meta[name]}\n")
+                            except Exception:
+                                pass
+
+                    # Generate and save thumbnail
+                    self.generate_thumbnail(wave, flux, thumbnail_file)
+
+                    self.logger.info(f"Saved spectrum to {spectrum_file}, metadata to {metadata_file}, and thumbnail to {thumbnail_file}")
+
+                    # Build tides_spec metadata
+                    def _mget(row, key, default=None):
+                        try:
+                            return row[key]
+                        except Exception:
+                            return default
+
+                    # Obs time from header if available
+                    obs_mjd = specheader.get('MJD-OBS') or specheader.get('MJDOBS') or specheader.get('MJD')
+                    obs_date = specheader.get('DATE-OBS')
+                    if obs_mjd is None and obs_date is None:
+                        obs_date = datetime.now().isoformat()
+
+                    metadata = {
+                        'TIDES_ID': int(obj_id),
+                        'QMOST_ID': self._compute_qmost_id(obj_id, spectrum_file),
+                        'TYPE': 'spectroscopy',
+                        'OBS_DATE': obs_date,
+                        'OBS_MJD': float(obs_mjd) if obs_mjd is not None else None,
+                        'SNR': _mget(meta, 'SNR', None),
+                        'SEEING': _mget(meta, 'SEEING', None),
+                        'SKY_BRIGHTNESS': _mget(meta, 'SKYBRITE', None) or _mget(meta, 'SKY_BRIGHT', None),
+                        'VERSION': self.config.get('version', 'pipeline')
+                    }
+
+                    # Update tides_spec with metadata (stores thumbnail path in additional_info)
+                    self.update_tides_spec(str(obj_id), metadata, spectrum_file, thumbnail_file)
+                except Exception as e:
+                    self.logger.error(f"Error processing spectrum {counter} in file {file_path}: {e}")
         return obj_names
 
     def generate_thumbnail(self, wavelength, flux, thumbnail_file):
@@ -178,17 +247,17 @@ class DataIngestion(Module):
                     version = EXCLUDED.version,
                     additional_info = EXCLUDED.additional_info
             """, (
-                metadata['TIDES_ID'],  # tides_id
-                metadata['QMOST_ID'],  # qmost_id
-                metadata['TYPE'],      # type
-                metadata['OBS_DATE'],  # obs_date
-                metadata['OBS_MJD'],   # obs_mjd
-                metadata['SNR'],       # snr
-                metadata['SEEING'],    # seeing
-                metadata['SKY_BRIGHTNESS'],  # sky_brightness
-                spectra_file_path,     # filepath
-                metadata['VERSION'],   # version
-                json.dumps(metadata)   # additional_info
+                metadata['TIDES_ID'],
+                metadata['QMOST_ID'],
+                metadata['TYPE'],
+                metadata['OBS_DATE'],
+                None if metadata['OBS_MJD'] is None else float(metadata['OBS_MJD']),
+                None if metadata['SNR'] is None else float(metadata['SNR']),
+                None if metadata['SEEING'] is None else float(metadata['SEEING']),
+                None if metadata['SKY_BRIGHTNESS'] is None else float(metadata['SKY_BRIGHTNESS']),
+                spectra_file_path,
+                metadata['VERSION'],
+                json.dumps(metadata, default=self._json_default)
             ))
             tides_db_conn.commit()
             self.logger.info(f"Updated tides_spec for object {obj_name}")

@@ -1,7 +1,6 @@
 modules:
   - data_ingestion
   - classification
-  - db_update
 
 
 data_ingestion:
@@ -20,6 +19,7 @@ db_creds:
   user: "pwise"
   password: ""
 data_paths:
-  deliveries_dir: "Users/pwise/4MOST/tides/test_data/tides_test"  
-  archive_dir: "Users/pwise/4MOST/tides/test_data/archive"
-  spectra_dir: "Users/pwise/4MOST/tides/test_data/spectra/2025-06-05"  # Example: Random night from the last week
+  deliveries_dir: "/Users/pwise/4MOST/tides/test_data/deliveries/"  # Example: Random night from the last week
+  archive_dir: "/Users/pwise/4MOST/tides/test_data/archive"
+  spectra_dir: "/Users/pwise/4MOST/tides/test_data/spectra/"  # Example: Random night from the last week
+  static_plots_dir: "/Users/pwise/4MOST/tides/tidestom/static/plots/"

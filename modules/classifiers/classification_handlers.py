@@ -1,18 +1,18 @@
 # filepath: /Users/pwise/4MOST/tides/tides_pipe/classification_handlers/example_classification_code.py
-import logging
+import importlib
 import yaml
 
 class ClassificationHandler:
-    def __init__(self, config_file):
+    def __init__(self, handler_name, config_file):
         self.config_file = config_file
-        # Load any necessary configuration from the config file
         with open(config_file, 'r') as f:
             self.config = yaml.safe_load(f)
+        # Dynamically import the handler module
+        module_path = f"tides_pipe.modules.classifiers.{handler_name}_handler"
+        handler_module = importlib.import_module(module_path)
+        # Instantiate the handler class (must be named Handler in each module)
+        self.handler = handler_module.Handler(self.config)
 
     def classify(self, spectrum_path):
-        # Placeholder for actual classification code
-        # Example: call external classification software
-        logging.info(f"Running classification on {spectrum_path} using {self.config_file}")
-        # os.system(f"classification_software {spectrum_path}")
-        # Return a dummy result for demonstration purposes
-        return {"result": "classified", "spectrum": spectrum_path}
+        # Delegate to the specific handler
+        return self.handler.classify(spectrum_path)

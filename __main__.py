@@ -9,7 +9,7 @@ def main():
     parser.add_argument("--config", type=str, help="Path to the configuration file")
     parser.add_argument("--modules", nargs="*", help="List of modules to run")
     parser.add_argument("--night", help="Night of observations to process")
-    parser.add_argument("--objects", nargs="*", help="List of objects to process")
+    parser.add_argument("--objects", nargs="*", help="List of objects to process (default is to find them automatically)")
     args = parser.parse_args()
 
     config_path = args.config if args.config else "config/config.yml"

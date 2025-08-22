@@ -1,6 +1,7 @@
 # filepath: tides_pipe/modules/module.py
 import logging
 import os
+import psycopg2
 
 class Module:
     def __init__(self, config):

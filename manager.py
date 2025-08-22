@@ -5,9 +5,19 @@ import os
 import yaml
 import logging
 import time
+import pathlib
+import datetime
 
 def setup_logger(night, config):
-    log_file = os.path.join(config['log_dir'], f"{night}.log")
+    # Check config for log_dir, else use default ./logs/{night}
+    log_dir = config.get('log_dir')
+    if not log_dir:
+        # Use current working directory
+        log_dir = os.path.join(os.getcwd(), "logs", str(night))
+    log_file = os.path.join(log_dir, f"{night}.log")
+    if not os.path.exists(log_dir):
+        pathlib.Path(log_dir).mkdir(parents=True, exist_ok=True)
+
     logging.basicConfig(
         filename=log_file,
         level=logging.INFO,
@@ -19,6 +29,13 @@ class PipelineManager:
     def __init__(self, modules=None, config_path=None):
         self.config_path = config_path or "config/config.yml"
         self.config = self.load_config()
+        # Ensure base_dir is set
+        if 'base_dir' not in self.config or not self.config['base_dir']:
+            today = datetime.datetime.now().strftime('%Y%m%d')
+            default_dir = os.path.join(os.getcwd(), f"tides_pipe_run_{today}")
+            if not os.path.exists(default_dir):
+                pathlib.Path(default_dir).mkdir(parents=True, exist_ok=True)
+            self.config['base_dir'] = default_dir
         self.modules = self.load_modules(modules)
 
     def load_config(self):
@@ -47,7 +64,7 @@ class PipelineManager:
                     if name == "data_ingestion":
                         obj_names = module(night, logger, self.config)
                     elif name == "classification":
-                        classification_results_file = module(night=night, objects=objects, logger=logger, config=self.config)
+                        classification_results_file = module(night=night, objects=obj_names, logger=logger, config=self.config)
                     else:
                         module(logger=logger, config=self.config)
                     if not self.check_module_done(name):

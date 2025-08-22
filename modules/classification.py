@@ -6,8 +6,7 @@ import pandas as pd
 import random
 from .module import Module
 
-BASE_DIR = "/path/to/base"
-SPECTRA_DIR = os.path.join(BASE_DIR, "spectra")
+
 
 class Classifier(Module):
     def __init__(self, code_config, config):
@@ -18,7 +17,7 @@ class Classifier(Module):
 
     def load_handler(self, code):
         # Dynamically load the handler for the specified classification code
-        module = importlib.import_module(f"tides_pipe.classification_handlers.{code}")
+        module = importlib.import_module(f"tides_pipe.modules.classifiers.{code}_handler.py")
         return module.ClassificationHandler(self.config_file)
 
     def classify(self, spectrum_path):
@@ -32,9 +31,6 @@ class Classifier(Module):
         return result
 
 def run(night=None, objects=None, logger=None, config=None):
-    with open(os.path.join(config['base_dir'], "config/config.yml"), 'r') as f:
-        config = yaml.safe_load(f)
-
     classification_config = config.get("classification", {})
     data_paths_config = config.get("data_paths", {})  # Load the data_paths block
     test_mode = classification_config.get("test", False)  # Read test mode from config
