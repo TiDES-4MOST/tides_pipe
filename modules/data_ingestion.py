@@ -140,7 +140,7 @@ class DataIngestion(Module):
             for counter, (flux, fluxerr, qual) in enumerate(zip(specdata['FLUX'], specdata['ERR_FLUX'], specdata['QUAL'])):
                 try:
                     meta = fibinfodat[counter]
-                    obj_id = self._obj_nme_to_bigint(meta['OBJ_NME'])
+                    obj_id = int(meta['OBJ_NME'])#self._obj_nme_to_bigint(meta['OBJ_NME']) To put back in when tides_cand.tides_id is a bigint
                     if obj_id not in valid_ids:
                         self.logger.warning(f"OBJ_NME {obj_id} not found in tides_cand; skipping.")
                         continue
@@ -187,13 +187,13 @@ class DataIngestion(Module):
                     metadata = {
                         'TIDES_ID': int(obj_id),
                         'QMOST_ID': self._compute_qmost_id(obj_id, spectrum_file),
-                        'TYPE': 'spectroscopy',
+                        'TYPE': 'pending',
                         'OBS_DATE': obs_date,
                         'OBS_MJD': float(obs_mjd) if obs_mjd is not None else None,
                         'SNR': _mget(meta, 'SNR', None),
                         'SEEING': _mget(meta, 'SEEING', None),
                         'SKY_BRIGHTNESS': _mget(meta, 'SKYBRITE', None) or _mget(meta, 'SKY_BRIGHT', None),
-                        'VERSION': self.config.get('version', 'pipeline')
+                        'VERSION':1 #_mget(meta, 'QMOST_PIPELINE_VERSION', '1.0'),
                     }
 
                     # Update tides_spec with metadata (stores thumbnail path in additional_info)
@@ -239,7 +239,7 @@ class DataIngestion(Module):
 
             cursor = tides_db_conn.cursor()
             cursor.execute("""
-                INSERT INTO tides_spec (tides_id, qmost_id, type, obs_date, obs_mjd, snr, seeing, sky_brightness, filepath, version, additional_info)
+                INSERT INTO tides_spec (tides_id, qmost_id, sn_type, obs_date, obs_mjd, snr, seeing, sky_brightness, filepath, version, additional_info)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (qmost_id) DO UPDATE SET
                     obs_date = EXCLUDED.obs_date,
