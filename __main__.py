@@ -1,8 +1,6 @@
 # __main__.py
 import logging
 import argparse
-import os
-import yaml
 from tides_pipe.manager import PipelineManager
 
 def main():

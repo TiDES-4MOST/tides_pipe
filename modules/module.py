@@ -21,3 +21,18 @@ class Module:
         with open(done_file, 'w') as f:
             f.write("TRUE\n")
         self.logger.info(f"{self.__class__.__name__} processing complete. Signaled with DONE.txt")
+
+    def connect_to_db(self, db_name):
+        """Connect to a PostgreSQL database."""
+        try:
+            conn = psycopg2.connect(
+                dbname=db_name,
+                user=self.config["db_creds"]["user"],
+                password=self.config["db_creds"]["password"],
+                host=self.config["db_creds"]["host"],
+                port=self.config["db_creds"]["port"],
+            )
+            return conn
+        except Exception as e:
+            self.logger.error(f"Failed to connect to database {db_name}: {e}")
+            return None
