@@ -12,6 +12,8 @@ import argparse
 from typing import List, Optional
 import asyncio
 from tides_pipe.modules.classifiers.client import classify_snid_async, classify_ngsf_async
+from tides_pipe.modules import db as dbutil
+from tides_pipe.modules.classifiers.classification_store import save_result
 
 _STOP = False
 
@@ -135,30 +137,48 @@ class PipelineManager:
 
     async def _run_classifiers_api(self, obj_names: list[str | int], logger: logging.Logger, snid_params: dict | None = None, ngsf_params: dict | None = None):
         """
-        Call classifier microservices (SNID/NGSF) via HTTP for each tides_id concurrently.
-        Service URLs/endpoints are configured via env in the classifier client.
+        Call classifier microservices (SNID/NGSF) via HTTP for each tides_id concurrently,
+        then persist results to the remote DB.
         """
+        # Open DB connection once
+        conn = None
+        try:
+            creds = dbutil.load_creds(self.config)
+            conn = dbutil.connect(creds)
+        except Exception as e:
+            logger.error(f"DB connection failed; will skip persistence: {e}")
+
+        async def tagged(method: str, tides_id: int, coro):
+            res = await coro
+            return method, tides_id, res
+
         tasks = []
         for tid in obj_names or []:
             spath = self._spectrum_path(tid)
             if not os.path.exists(spath):
                 logger.warning(f"Spectrum not found for {tid}: {spath}")
                 continue
-            # Fan out concurrent calls
-            tasks.append(classify_snid_async(int(tid), spath, snid_params or {}))
-            tasks.append(classify_ngsf_async(int(tid), spath, ngsf_params or {}))
+            tid_int = int(tid)
+            tasks.append(tagged("snid", tid_int, classify_snid_async(tid_int, spath, snid_params or {})))
+            tasks.append(tagged("ngsf", tid_int, classify_ngsf_async(tid_int, spath, ngsf_params or {})))
 
         ok = True
-        for coro in asyncio.as_completed(tasks):
+        async for coro in asyncio.as_completed(tasks):
             try:
-                res = await coro
-                logger.info(f"Classifier result: {res}")
+                method, tid_int, res = await coro
+                logger.info(f"{method} result for {tid_int}: {res}")
+                if conn:
+                    save_result(conn, tid_int, method, res, logger=logger)
             except Exception as e:
                 ok = False
                 logger.error(f"Classifier call failed: {e}", exc_info=True)
 
-        # Mark as done so check_module_done('classification_api') passes
         self.set_module_done("classification_api", ok)
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def run(self, night=None, objects=None, one_shot: bool = False, sleep_seconds: int = 60):
         logger = setup_logger(night, self.config)
