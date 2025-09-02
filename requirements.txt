@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+httpx
+watchdog
+psycopg2-binary
+astropy
+pyyaml

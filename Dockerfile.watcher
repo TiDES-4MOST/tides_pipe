@@ -1,0 +1,7 @@
+FROM python:3.11-slim
+WORKDIR /app
+RUN pip install watchdog httpx
+COPY tides_pipe/watcher.py /app/watcher.py
+ENV DELIVERIES_DIR=/data/deliveries
+ENV PIPELINE_API=http://pipeline:8001
+CMD ["python", "/app/watcher.py"]
