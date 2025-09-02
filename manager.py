@@ -14,6 +14,7 @@ import asyncio
 from tides_pipe.modules.classifiers.client import classify_snid_async, classify_ngsf_async
 from tides_pipe.modules import db as dbutil
 from tides_pipe.modules.classifiers.classification_store import save_result
+from importlib import import_module
 
 _STOP = False
 
@@ -80,7 +81,8 @@ class PipelineManager:
         else:
             pathlib.Path(self.config['base_dir']).mkdir(parents=True, exist_ok=True)
 
-        self.modules = self.load_modules(modules)
+        # Load pluggable steps (modules or callables). Falls back to legacy modules list.
+        self.steps = self.load_steps(modules)
 
     def load_config(self):
         if not os.path.exists(self.config_path):
@@ -89,34 +91,77 @@ class PipelineManager:
         with open(self.config_path, 'r') as f:
             return yaml.safe_load(f) or {"modules": []}
 
-    def load_modules(self, modules):
-        config_modules = self.config.get("modules", [])
-        if modules is None:
-            modules = config_modules
-        else:
-            # preserve order, de-dupe
-            seen = set()
-            merged = []
-            for m in modules + config_modules:
-                if m not in seen:
-                    merged.append(m)
-                    seen.add(m)
-            modules = merged
+    def _merge_lists(self, a, b):
+        seen, out = set(), []
+        for x in (a or []) + (b or []):
+            if x not in seen:
+                out.append(x)
+                seen.add(str(x))
+        return out
 
-        loaded_modules = []
+    def _import_callable(self, dotted: str):
+        """
+        Import a callable referenced as 'pkg.mod:func'.
+        """
+        if ":" not in dotted:
+            raise ValueError(f"Callable must be 'pkg.mod:func', got {dotted}")
+        mod_path, func_name = dotted.split(":", 1)
+        mod = import_module(mod_path)
+        fn = getattr(mod, func_name)
+        if not callable(fn):
+            raise TypeError(f"{dotted} is not callable")
+        return fn
+
+    def load_steps(self, modules_override: Optional[List[str]] = None):
+        """
+        Supports:
+        - legacy: config['modules'] = ['data_ingestion', 'classification_api']
+        - new: config['steps'] = [{type: module, import: data_ingestion}, {type: callable, name: classification_api, func: pkg:run, params:{}}]
+        Returns list of dicts: {name, kind, runner, params}
+        """
+        steps_cfg = self.config.get("steps")
+        if steps_cfg:
+            steps = []
+            for s in steps_cfg:
+                kind = s.get("type", "module")
+                name = s.get("name") or s.get("import") or s.get("func")
+                params = s.get("params") or {}
+                if kind == "module":
+                    imp = s.get("import")
+                    modpath = imp if "." in str(imp) else f"tides_pipe.modules.{imp}"
+                    try:
+                        mod = import_module(modpath)
+                        runner = getattr(mod, "run")
+                        steps.append({"name": name, "kind": "module", "runner": runner, "params": params})
+                    except Exception as e:
+                        logging.getLogger("tides_manager").error(f"Failed to load module '{imp}': {e}", exc_info=True)
+                elif kind == "callable":
+                    func = s.get("func")
+                    try:
+                        runner = self._import_callable(func)
+                        steps.append({"name": name, "kind": "callable", "runner": runner, "params": params})
+                    except Exception as e:
+                        logging.getLogger("tides_manager").error(f"Failed to import callable '{func}': {e}", exc_info=True)
+                else:
+                    logging.getLogger("tides_manager").warning(f"Unknown step kind '{kind}' for {s}")
+            return steps
+
+        # Legacy fallback using 'modules' list
+        config_modules = self.config.get("modules", [])
+        modules = self._merge_lists(modules_override, config_modules)
+        steps = []
         for name in modules:
-            # Pseudo-modules handled inside manager.run
-            if name in ("classification_api",):
-                loaded_modules.append((name, None))
+            if name == "classification_api":
+                # Built-in pseudo-step handled below
+                steps.append({"name": "classification_api", "kind": "builtin", "runner": None, "params": {}})
                 continue
             try:
-                mod = importlib.import_module(f"tides_pipe.modules.{name}")
-                run_func = getattr(mod, "run")
-                loaded_modules.append((name, run_func))
+                mod = import_module(f"tides_pipe.modules.{name}")
+                runner = getattr(mod, "run")
+                steps.append({"name": name, "kind": "module", "runner": runner, "params": {}})
             except Exception as e:
-                # Log and skip unknown/broken modules
                 logging.getLogger("tides_manager").error(f"Failed to load module '{name}': {e}", exc_info=True)
-        return loaded_modules
+        return steps
 
     def _spectrum_path(self, tides_id: str | int) -> str:
         """
@@ -184,6 +229,7 @@ class PipelineManager:
         logger = setup_logger(night, self.config)
         logger.info(f"Pipeline starting (night={night}, one_shot={one_shot}, sleep={sleep_seconds}s)")
         global _STOP
+        obj_names = []  # carry-forward objects between steps
 
         while True:
             if _STOP:
@@ -192,25 +238,32 @@ class PipelineManager:
 
             all_done = True
             classification_results_file = None
-            obj_names = []
 
-            for name, module in self.modules:
-                logger.info(f"Running module: {name}")
+            for step in self.steps:
+                name, kind, runner, params = step["name"], step["kind"], step["runner"], step.get("params") or {}
+                logger.info(f"Running step: {name} ({kind})")
                 try:
-                    if name == "data_ingestion":
-                        obj_names = module(night, logger, self.config)
-                    elif name == "classification":
-                        classification_results_file = module(night=night, objects=obj_names, logger=logger, config=self.config)
-                    elif name == "classification_api":
-                        # Call classifier microservices over HTTP
+                    if kind == "module":
+                        # Standard module signature
+                        out = runner(night, logger, self.config)
+                        if isinstance(out, list):
+                            obj_names = out
+                    elif kind == "callable":
+                        # Generic callable signature; pass context (kwargs)
+                        out = runner(night=night, logger=logger, config=self.config, objects=obj_names, **params)
+                        # Allow callables to update objects or return a results file
+                        if isinstance(out, dict):
+                            obj_names = out.get("objects", obj_names)
+                            classification_results_file = out.get("results_file", classification_results_file)
+                    elif kind == "builtin" and name == "classification_api":
                         asyncio.run(self._run_classifiers_api(obj_names, logger))
                     else:
-                        module(logger=logger, config=self.config)
+                        logger.warning(f"Unknown step kind '{kind}' for {name}")
 
                     if not self.check_module_done(name):
                         all_done = False
                 except Exception as e:
-                    logger.error(f"Error in {name}: {e}", exc_info=True)
+                    logger.error(f"Error in step '{name}': {e}", exc_info=True)
                     all_done = False
 
             if all_done:
