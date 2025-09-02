@@ -15,6 +15,7 @@ from tides_pipe.modules.classifiers.client import classify_snid_async, classify_
 from tides_pipe.modules import db as dbutil
 from tides_pipe.modules.classifiers.classification_store import save_result
 from importlib import import_module
+from tides_pipe.modules import status_store
 
 _STOP = False
 
@@ -83,6 +84,9 @@ class PipelineManager:
 
         # Load pluggable steps (modules or callables). Falls back to legacy modules list.
         self.steps = self.load_steps(modules)
+        # Status tracking
+        self.current_night: str = ""
+        self._status_conn = None
 
     def load_config(self):
         if not os.path.exists(self.config_path):
@@ -207,6 +211,7 @@ class PipelineManager:
             tasks.append(tagged("snid", tid_int, classify_snid_async(tid_int, spath, snid_params or {})))
             tasks.append(tagged("ngsf", tid_int, classify_ngsf_async(tid_int, spath, ngsf_params or {})))
 
+        classified_ok = 0
         ok = True
         async for coro in asyncio.as_completed(tasks):
             try:
@@ -214,9 +219,30 @@ class PipelineManager:
                 logger.info(f"{method} result for {tid_int}: {res}")
                 if conn:
                     save_result(conn, tid_int, method, res, logger=logger)
+                classified_ok += 1
             except Exception as e:
                 ok = False
                 logger.error(f"Classifier call failed: {e}", exc_info=True)
+        
+        # Update status after classification progress/completion
+        if self._status_conn and self.current_night:
+            try:
+                status_store.upsert_status(
+                    self._status_conn,
+                    self.current_night,
+                    "classifying",
+                    classified=classified_ok,
+                    message="Classification completed" if ok else "Classification completed with errors",
+                )
+                status_store.add_event(
+                    self._status_conn,
+                    self.current_night,
+                    "classification_api",
+                    "INFO" if ok else "ERROR",
+                    f"classified {classified_ok} objects",
+                )
+            except Exception:
+                pass
 
         self.set_module_done("classification_api", ok)
         if conn:
@@ -230,10 +256,27 @@ class PipelineManager:
         logger.info(f"Pipeline starting (night={night}, one_shot={one_shot}, sleep={sleep_seconds}s)")
         global _STOP
         obj_names = []  # carry-forward objects between steps
+        # Night context for status/events
+        self.current_night = str(night or "")
+        # Open status DB connection (optional; continue if not available)
+        try:
+            creds = dbutil.load_creds(self.config)
+            self._status_conn = dbutil.connect(creds)
+            if self.current_night:
+                status_store.upsert_status(self._status_conn, self.current_night, "running", message="Manager started")
+                status_store.add_event(self._status_conn, self.current_night, "manager", "INFO", "Manager loop starting")
+        except Exception as e:
+            logger.warning(f"Status DB not available: {e}")
 
         while True:
             if _STOP:
                 logger.info("Shutdown signal received; exiting manager loop.")
+                if self._status_conn and self.current_night:
+                    try:
+                        status_store.add_event(self._status_conn, self.current_night, "manager", "INFO", "Shutdown requested")
+                        status_store.upsert_status(self._status_conn, self.current_night, "error", message="Interrupted", finished=True)
+                    except Exception:
+                        pass
                 break
 
             all_done = True
@@ -242,12 +285,34 @@ class PipelineManager:
             for step in self.steps:
                 name, kind, runner, params = step["name"], step["kind"], step["runner"], step.get("params") or {}
                 logger.info(f"Running step: {name} ({kind})")
+                # Pre-step status/event
+                if self._status_conn and self.current_night:
+                    try:
+                        status_store.add_event(self._status_conn, self.current_night, name, "INFO", "Starting")
+                        if name == "data_ingestion":
+                            status_store.upsert_status(self._status_conn, self.current_night, "ingesting", message="Ingestion running")
+                        elif name.startswith("classification"):
+                            status_store.upsert_status(self._status_conn, self.current_night, "classifying", message="Classification running")
+                    except Exception:
+                        pass
                 try:
                     if kind == "module":
                         # Standard module signature
                         out = runner(night, logger, self.config)
                         if isinstance(out, list):
                             obj_names = out
+                            # Post-ingestion status: record count
+                            if self._status_conn and self.current_night and name == "data_ingestion":
+                                try:
+                                    status_store.upsert_status(
+                                        self._status_conn,
+                                        self.current_night,
+                                        "ingesting",
+                                        ingested=len(obj_names),
+                                        message="Ingestion complete",
+                                    )
+                                except Exception:
+                                    pass
                     elif kind == "callable":
                         # Generic callable signature; pass context (kwargs)
                         out = runner(night=night, logger=logger, config=self.config, objects=obj_names, **params)
@@ -264,51 +329,30 @@ class PipelineManager:
                         all_done = False
                 except Exception as e:
                     logger.error(f"Error in step '{name}': {e}", exc_info=True)
+                    if self._status_conn and self.current_night:
+                        try:
+                            status_store.add_event(self._status_conn, self.current_night, name, "ERROR", str(e))
+                            status_store.upsert_status(self._status_conn, self.current_night, "error", message=f"{name} failed")
+                        except Exception:
+                            pass
                     all_done = False
 
             if all_done:
                 self.send_to_db(classification_results_file, obj_names, logger)
                 self.signal_pipeline_done(logger)
+                if self._status_conn and self.current_night:
+                    try:
+                        status_store.upsert_status(self._status_conn, self.current_night, "done", message="Pipeline complete", finished=True)
+                        status_store.add_event(self._status_conn, self.current_night, "manager", "INFO", "Pipeline complete")
+                    except Exception:
+                        pass
             else:
                 self.clear_pipeline_done_signal(logger)
 
             if one_shot:
                 logger.info("One-shot mode enabled; exiting after one iteration.")
-                break
-
-            time.sleep(sleep_seconds)
-
-    def check_module_done(self, module_name):
-        module_done_file = os.path.join(self.config['base_dir'], f"{module_name}_DONE.txt")
-        if os.path.exists(module_done_file):
-            with open(module_done_file, 'r') as f:
-                status = f.read().strip()
-                return status == "TRUE"
-        return False
-
-
-    def signal_pipeline_done(self, logger):
-        with open(os.path.join(self.config['base_dir'], "DONE.txt"), 'w') as f:
-            f.write("TRUE\n")
-        logger.info("Pipeline processing complete. Signaled with DONE.txt")
-
-    def clear_pipeline_done_signal(self, logger):
-        done_file = os.path.join(self.config['base_dir'], "DONE.txt")
-        if os.path.exists(done_file):
-            os.remove(done_file)
-        logger.info("Pipeline processing not complete. Cleared DONE.txt signal")
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="TiDES Pipeline Manager")
-    parser.add_argument("--night", help="Night to process (e.g. 20250129)")
-    parser.add_argument("--modules", nargs="*", help="Override module list (defaults to config.modules)")
-    parser.add_argument("--config", help="Path to config.yml (defaults to $TIDES_CONFIG or config/config.yml)")
-    parser.add_argument("--one-shot", action="store_true", help="Run once then exit (or set ONE_SHOT=1)")
-    parser.add_argument("--sleep", type=int, default=int(os.getenv("LOOP_SLEEP", "60")), help="Sleep seconds between loops")
-    args = parser.parse_args()
-
-    mgr = PipelineManager(modules=args.modules, config_path=args.config)
-    one_shot_env = os.getenv("ONE_SHOT", "").lower() in ("1", "true", "yes")
-    mgr.run(night=args.night, one_shot=(args.one_shot or one_shot_env), sleep_seconds=args.sleep)
-
+                if self._status_conn and self.current_night:
+                    try:
+                        status_store.add_event(self._status_conn, self.current_night, "manager", "INFO", "One-shot exit")
+                   
 
