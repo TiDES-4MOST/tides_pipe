@@ -1,0 +1,62 @@
+version: "3.9"
+services:
+  pipeline:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    container_name: tides_pipeline
+    environment:
+      TIDES_CONFIG: /app/tides_pipe/config/config.yml
+      DELIVERIES_DIR: /data/deliveries
+      SPECTRA_DIR: /data/spectra
+      STATIC_PLOTS_DIR: /data/static/plots
+      # remote DB creds provided at runtime (compose .env or CI secrets)
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_SSLMODE: ${DB_SSLMODE:-prefer}
+      CLASSIFIER_SNID_URL: ${CLASSIFIER_SNID_URL:-http://snid_api:8000}
+      CLASSIFIER_NGSF_URL: ${CLASSIFIER_NGSF_URL:-http://ngsf_api:8000}
+    volumes:
+      - ./deliveries:/data/deliveries
+      - ./spectra:/data/spectra
+      - ./static/plots:/data/static/plots
+      - ./config/config.yml:/app/tides_pipe/config/config.yml:ro
+    ports:
+      - "8001:8001"  # uvicorn port for ingest_api
+    command: >
+      uvicorn tides_pipe.ingest_api:app
+      --host 0.0.0.0 --port 8001
+    depends_on:
+      - snid_api
+      - ngsf_api
+
+  watcher:
+    build:
+      context: .
+      dockerfile: ./Dockerfile.watcher
+    container_name: tides_watcher
+    environment:
+      DELIVERIES_DIR: /data/deliveries
+      PIPELINE_API: http://pipeline:8001
+    volumes:
+      - ./deliveries:/data/deliveries
+    depends_on:
+      - pipeline
+
+  snid_api:
+    build: ./modules/classifiers/snid_docker/
+    expose: ["8000"]
+    volumes:
+      - ./spectra:/data/spectra:ro
+
+  ngsf_api:
+    build: ./modules/classifiers/ngsf_docker/
+    expose: ["8000"]
+    working_dir: /data/spectra
+    volumes:
+      - ./spectra:/data/spectra:ro
+
+volumes: {}
