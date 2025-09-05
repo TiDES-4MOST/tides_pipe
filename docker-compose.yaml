@@ -32,6 +32,7 @@ services:
     depends_on:
       - snid_api
       - ngsf_api
+      - qxp_api
 
   watcher:
     build:
@@ -54,6 +55,13 @@ services:
 
   ngsf_api:
     build: ./modules/classifiers/ngsf_docker/
+    expose: ["8000"]
+    working_dir: /data/spectra
+    volumes:
+      - ./spectra:/data/spectra:ro
+
+  qxp_api:
+    build: ./modules/classifiers/qxp/
     expose: ["8000"]
     working_dir: /data/spectra
     volumes:
