@@ -9,8 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# App code
-COPY tides_pipe /app/tides_pipe
+# App code - copy entire current directory as tides_pipe
+COPY . /app/tides_pipe
+
+# Set Python path so imports work correctly
+ENV PYTHONPATH=/app
 
 # Expose config via env
 #TODO configure these to whatever mounted disks we have

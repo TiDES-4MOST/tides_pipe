@@ -55,11 +55,13 @@ class DataIngestion(Module):
             return int(float(s))
 
     def process_night(self, night):
-        # Use paths from the config file
+        # Use paths from environment variables (for containers) or fall back to config file (for local development)
         self.logger.info(f"Starting data ingestion for night: {night}")
-        deliveries_dir = self.config['data_paths']['deliveries_dir']
-        spectra_dir = self.config['data_paths']['spectra_dir']
-        archive_dir = self.config['data_paths']['archive_dir']
+        deliveries_dir = os.getenv('DELIVERIES_DIR') or self.config['data_paths']['deliveries_dir']
+        spectra_dir = os.getenv('SPECTRA_DIR') or self.config['data_paths']['spectra_dir']
+        archive_dir = self.config['data_paths']['archive_dir']  # Keep from config as no container env var needed
+        self.logger.info(f"Using deliveries_dir: {deliveries_dir}")
+        self.logger.info(f"Using spectra_dir: {spectra_dir}")
         night_dir = os.path.join(deliveries_dir, night)
         self.logger.info(f"Looking for deliveries in nightly deliveries directory: {night_dir}")
         spectra_night_dir = os.path.join(spectra_dir, night)
@@ -123,14 +125,17 @@ class DataIngestion(Module):
 
             # Preload valid tides_ids from tides_cand to ensure OBJ_NME matches
             valid_ids = set()
-            tides_db_conn = self.connect_to_db("tides_db")
+            tides_db_conn = self.connect_to_db()
             if not tides_db_conn:
-                self.logger.error("Failed to connect to tides_db to validate tides_id")
+                self.logger.error("Failed to connect to database to validate tides_id")
                 return obj_names
+            
+            self.logger.info("Successfully connected to database")
             try:
                 cur = tides_db_conn.cursor()
                 cur.execute("SELECT tides_id FROM tides_cand")
                 valid_ids = {int(r[0]) for r in cur.fetchall()}
+                self.logger.info(f"Loaded {len(valid_ids)} valid tides_ids from tides_cand table")
             except Exception as e:
                 self.logger.error(f"Could not fetch tides_cand ids: {e}")
             finally:
@@ -229,11 +234,12 @@ class DataIngestion(Module):
         """
         Add or update tides_spec for the given object, including the thumbnail filepath in the additional_info JSON field.
         """
-        tides_db_conn = self.connect_to_db("tides_db")
+        tides_db_conn = self.connect_to_db()
         if not tides_db_conn:
-            self.logger.error("Failed to connect to tides_db for updating tides_spec")
+            self.logger.error("Failed to connect to database for updating tides_spec")
             return
 
+        self.logger.info("Successfully connected to database for tides_spec update")
         try:
             metadata['THUMBNAIL'] = thumbnail_file_path  # Local static path
 
@@ -259,8 +265,9 @@ class DataIngestion(Module):
                 metadata['VERSION'],
                 json.dumps(metadata, default=self._json_default)
             ))
+            rows_affected = cursor.rowcount
             tides_db_conn.commit()
-            self.logger.info(f"Updated tides_spec for object {obj_name}")
+            self.logger.info(f"Successfully inserted/updated {rows_affected} row(s) in tides_spec for object {obj_name} (qmost_id: {metadata['QMOST_ID']})")
         except Exception as e:
             self.logger.error(f"Failed to update tides_spec for object {obj_name}: {e}")
         finally:

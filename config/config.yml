@@ -19,7 +19,7 @@ db_creds:
   user: "pwise"
   password: ""
 data_paths:
-  deliveries_dir: "/Users/pwise/4MOST/tides/test_data/deliveries/"  # Example: Random night from the last week
-  archive_dir: "/Users/pwise/4MOST/tides/test_data/archive"
-  spectra_dir: "/Users/pwise/4MOST/tides/test_data/spectra/"  # Example: Random night from the last week
-  static_plots_dir: "/Users/pwise/4MOST/tides/tidestom/static/plots/"
+  deliveries_dir: "/data/deliveries"  # Container path for deliveries
+  archive_dir: "/data/archive"
+  spectra_dir: "/data/spectra"  # Container path for spectra
+  static_plots_dir: "/data/static/plots"

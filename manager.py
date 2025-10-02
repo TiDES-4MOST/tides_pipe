@@ -184,6 +184,17 @@ class PipelineManager:
         with open(module_done_file, 'w') as f:
             f.write("TRUE\n" if status else "FALSE\n")
 
+    def check_module_done(self, module_name: str) -> bool:
+        """
+        Check if a module has been marked as done.
+        """
+        module_done_file = os.path.join(self.config['base_dir'], f"{module_name}_DONE.txt")
+        if os.path.exists(module_done_file):
+            with open(module_done_file, 'r') as f:
+                content = f.read().strip()
+                return content == "TRUE"
+        return False
+
     async def _run_classifiers_api(self, obj_names: list[str | int], logger: logging.Logger, snid_params: dict | None = None, ngsf_params: dict | None = None):
         """
         Call classifier microservices (SNID/NGSF) via HTTP for each tides_id concurrently,
@@ -250,6 +261,58 @@ class PipelineManager:
                 conn.close()
             except Exception:
                 pass
+
+    def send_to_db(self, classification_results_file, obj_names, logger):
+        """Send classification results from file to database."""
+        if not classification_results_file or not os.path.exists(classification_results_file):
+            logger.warning(f"Classification results file not found: {classification_results_file}")
+            return
+        
+        try:
+            import pandas as pd
+            df = pd.read_csv(classification_results_file)
+            logger.info(f"Reading classification results from {classification_results_file}")
+            
+            # Get database connection
+            conn = self.connect_to_db()
+            if not conn:
+                logger.error("Could not connect to database for saving classification results")
+                return
+                
+            # Process each row in the results file
+            for _, row in df.iterrows():
+                tid_int = int(row.get('obj_name', 0))  # Assuming obj_name contains the tides_id
+                
+                # Check for different classification methods in the row
+                for method in ['snid', 'ngsf',]:  # Add other methods as needed
+                    result_key = f'auto_class_{method}'
+                    prob_key = f'auto_class_prob_{method}'
+                    subclass_key = f'auto_class_subclass_{method}'
+                    
+                    if result_key in row and pd.notna(row[result_key]):
+                        result = {
+                            'result': row[result_key],
+                            'probability': row.get(prob_key, 0.0),
+                            'subclass': row.get(subclass_key, '')
+                        }
+                        save_result(conn, tid_int, method, result, logger=logger)
+                        logger.info(f"Saved {method} result for {tid_int}: {result}")
+            
+            conn.close()
+            logger.info(f"Successfully saved classification results from {classification_results_file}")
+            
+        except Exception as e:
+            logger.error(f"Failed to send classification results to database: {e}", exc_info=True)
+
+    def signal_pipeline_done(self, logger):
+        """Signal that pipeline processing is complete."""
+        logger.info("Pipeline processing complete")
+        # You can add additional logic here like writing a done file or updating status
+        
+    def clear_pipeline_done_signal(self, logger):
+        """Clear any pipeline done signals."""
+        logger.info("Clearing pipeline done signals")
+        # You can add additional logic here like removing done files
 
     def run(self, night=None, objects=None, one_shot: bool = False, sleep_seconds: int = 60):
         logger = setup_logger(night, self.config)
@@ -354,5 +417,7 @@ class PipelineManager:
                 if self._status_conn and self.current_night:
                     try:
                         status_store.add_event(self._status_conn, self.current_night, "manager", "INFO", "One-shot exit")
-                   
+                    except Exception as e:
+                        logger.error(f"Failed to log one-shot exit event: {e}")
+                break
 

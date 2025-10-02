@@ -1,4 +1,3 @@
-version: "3.9"
 services:
   pipeline:
     build:
@@ -6,10 +5,10 @@ services:
       dockerfile: ./Dockerfile
     container_name: tides_pipeline
     environment:
-      TIDES_CONFIG: /app/tides_pipe/config/config.yml
-      DELIVERIES_DIR: /data/deliveries
-      SPECTRA_DIR: /data/spectra
-      STATIC_PLOTS_DIR: /data/static/plots
+      TIDES_CONFIG: ${CONFIG_PATH}/config.yml
+      DELIVERIES_DIR: ${DELIVERIES_DIR}
+      SPECTRA_DIR: ${SPECTRA_DIR}
+      STATIC_PLOTS_DIR: ${STATIC_PLOTS_DIR}
       # remote DB creds provided at runtime (compose .env or CI secrets)
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT:-5432}
@@ -20,10 +19,10 @@ services:
       CLASSIFIER_SNID_URL: ${CLASSIFIER_SNID_URL:-http://snid_api:8000}
       CLASSIFIER_NGSF_URL: ${CLASSIFIER_NGSF_URL:-http://ngsf_api:8000}
     volumes:
-      - ./deliveries:/data/deliveries
-      - ./spectra:/data/spectra
-      - ./static/plots:/data/static/plots
-      - ./config/config.yml:/app/tides_pipe/config/config.yml:ro
+      - ${DATA_DELIVERIES_PATH:-./deliveries}:${DELIVERIES_DIR}
+      - ${DATA_SPECTRA_PATH:-./spectra}:${SPECTRA_DIR}
+      - ${DATA_STATIC_PATH:-./static/plots}:${STATIC_PLOTS_DIR}
+      - ./config/config.yml:${CONFIG_PATH}/config.yml:ro
     ports:
       - "8001:8001"  # uvicorn port for ingest_api
     command: >
@@ -40,10 +39,10 @@ services:
       dockerfile: ./Dockerfile.watcher
     container_name: tides_watcher
     environment:
-      DELIVERIES_DIR: /data/deliveries
+      DELIVERIES_DIR: ${DELIVERIES_DIR}
       PIPELINE_API: http://pipeline:8001
     volumes:
-      - ./deliveries:/data/deliveries
+      - ${DATA_DELIVERIES_PATH:-./deliveries}:${DELIVERIES_DIR}
     depends_on:
       - pipeline
 
@@ -51,20 +50,20 @@ services:
     build: ./modules/classifiers/snid_docker/
     expose: ["8000"]
     volumes:
-      - ./spectra:/data/spectra:ro
+      - ${DATA_SPECTRA_PATH:-./spectra}:${SPECTRA_DIR}:ro
 
   ngsf_api:
     build: ./modules/classifiers/ngsf_docker/
     expose: ["8000"]
-    working_dir: /data/spectra
+    working_dir: ${SPECTRA_DIR}
     volumes:
-      - ./spectra:/data/spectra:ro
+      - ${DATA_SPECTRA_PATH:-./spectra}:${SPECTRA_DIR}:ro
 
   qxp_api:
     build: ./modules/classifiers/qxp/
     expose: ["8000"]
-    working_dir: /data/spectra
+    working_dir: ${SPECTRA_DIR}
     volumes:
-      - ./spectra:/data/spectra:ro
+      - ${DATA_SPECTRA_PATH:-./spectra}:${SPECTRA_DIR}:ro
 
 volumes: {}

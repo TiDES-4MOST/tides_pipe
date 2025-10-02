@@ -5,3 +5,5 @@ watchdog
 psycopg2-binary
 astropy
 pyyaml
+pandas
+matplotlib

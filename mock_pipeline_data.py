@@ -8,22 +8,27 @@ import matplotlib.pyplot as plt
 from astropy.io import fits
 from datetime import datetime
 from shutil import copyfile
+from modules import db
+
+# Load environment variables from .env file if running directly
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # dotenv not available, rely on environment variables being set
+    pass
+
 # Configuration
-DELIVERIES_DIR = "/Users/pwise/4MOST/tides/test_data/tides_test/sims/"
-STATIC_DIR = "/Users/pwise/4MOST/tides/static/plots/"
-SPECTRA_DIR = "/Users/pwise/4MOST/tides/test_data/spectra/"
-DB_CONFIG = {
-    "dbname": "tides_db",
-    "user": "pwise",
-    "password": "",
-    "host": "localhost",
-    "port": "5432",
-}
+DELIVERIES_DIR = os.getenv("DATA_DELIVERIES_PATH", "./deliveries")
+STATIC_DIR = os.getenv("DATA_STATIC_PATH", "./static/plots") 
+SPECTRA_DIR = os.getenv("DATA_SPECTRA_PATH", "./spectra")
 
 def connect_to_db():
-    """Connects to the PostgreSQL database."""
+    """Connects to the PostgreSQL database using db.py configuration."""
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        # Load credentials using db.py, falling back to None config (environment variables)
+        creds = db.load_creds(None)
+        conn = db.connect(creds)
         return conn
     except Exception as e:
         print(f"Failed to connect to the database: {e}")
