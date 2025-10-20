@@ -4,7 +4,6 @@ services:
     build:
       context: .
       dockerfile: ./Dockerfile
-    container_name: tides_pipeline
     environment:
       TIDES_CONFIG: /app/tides_pipe/config/config.yml
       DELIVERIES_DIR: /data/deliveries
@@ -33,12 +32,13 @@ services:
       - snid_api
       - ngsf_api
       - qxp_api
+    networks:
+      - backend
 
   watcher:
     build:
       context: .
       dockerfile: ./Dockerfile.watcher
-    container_name: tides_watcher
     environment:
       DELIVERIES_DIR: /data/deliveries
       PIPELINE_API: http://pipeline:8001
@@ -47,18 +47,18 @@ services:
     depends_on:
       - pipeline
 
-  snid_api:
-    build: ./modules/classifiers/snid_docker/
-    expose: ["8000"]
-    volumes:
-      - ./spectra:/data/spectra:ro
+#  snid_api:
+#    build: ./modules/classifiers/snid_docker/
+#    expose: ["8000"]
+#    volumes:
+#      - ./spectra:/data/spectra:ro
 
-  ngsf_api:
-    build: ./modules/classifiers/ngsf_docker/
-    expose: ["8000"]
-    working_dir: /data/spectra
-    volumes:
-      - ./spectra:/data/spectra:ro
+#  ngsf_api:
+#    build: ./modules/classifiers/ngsf_docker/
+#    expose: ["8000"]
+#    working_dir: /data/spectra
+#    volumes:
+#      - ./spectra:/data/spectra:ro
 
   qxp_api:
     build: ./modules/classifiers/qxp/
@@ -68,3 +68,7 @@ services:
       - ./spectra:/data/spectra:ro
 
 volumes: {}
+
+networks:
+  backend:
+    external: true
