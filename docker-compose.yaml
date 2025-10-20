@@ -69,6 +69,6 @@ services:
 
 volumes: {}
 
-networks:
-  backend:
-    external: true
+#networks:
+#  backend:
+#    external: true
