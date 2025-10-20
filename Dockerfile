@@ -10,7 +10,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # App code
-COPY tides_pipe /app/tides_pipe
+COPY . /app/tides_pipe
 
 # Expose config via env
 #TODO configure these to whatever mounted disks we have
