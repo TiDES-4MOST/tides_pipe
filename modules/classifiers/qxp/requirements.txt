@@ -3,3 +3,4 @@ astropy
 scipy
 fastapi[standard]
 pydantic
+pandas
