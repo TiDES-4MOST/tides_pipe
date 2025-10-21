@@ -63,7 +63,7 @@ services:
   qxp_api:
     build: ./modules/classifiers/qxp/
     expose: ["8000"]
-    working_dir: /data/spectra
+    #working_dir: /data/spectra
     volumes:
       - ./spectra:/data/spectra:ro
 
