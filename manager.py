@@ -354,5 +354,7 @@ class PipelineManager:
                 if self._status_conn and self.current_night:
                     try:
                         status_store.add_event(self._status_conn, self.current_night, "manager", "INFO", "One-shot exit")
-                   
+                    except:
+                        break
+
 
