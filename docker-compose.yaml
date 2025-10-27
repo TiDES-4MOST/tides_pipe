@@ -19,9 +19,9 @@ services:
       CLASSIFIER_SNID_URL: ${CLASSIFIER_SNID_URL:-http://snid_api:8000}
       CLASSIFIER_NGSF_URL: ${CLASSIFIER_NGSF_URL:-http://ngsf_api:8000}
     volumes:
-      - ./deliveries:/data/deliveries
-      - ./spectra:/data/spectra
-      - ./static/plots:/data/static/plots
+      - deliveries_volume:/data/deliveries
+      - spectra_volume:/data/spectra
+      - static_volume_1/plots:/data/static/plots
       - ./config/config.yml:/app/tides_pipe/config/config.yml:ro
     ports:
       - "8001:8001"  # uvicorn port for ingest_api
@@ -43,7 +43,7 @@ services:
       DELIVERIES_DIR: /data/deliveries
       PIPELINE_API: http://pipeline:8001
     volumes:
-      - ./deliveries:/data/deliveries
+      - deliveries_volume:/data/deliveries
     depends_on:
       - pipeline
 
@@ -65,7 +65,7 @@ services:
     expose: ["8000"]
     #working_dir: /data/spectra
     volumes:
-      - ./spectra:/data/spectra:ro
+      - spectra_volume:/data/spectra:ro
 
 volumes: {}
 
