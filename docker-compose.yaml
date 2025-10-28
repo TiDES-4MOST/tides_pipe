@@ -21,7 +21,7 @@ services:
     volumes:
       - deliveries_volume:/data/deliveries
       - spectra_volume:/data/spectra
-      - static_volume_1:/data/static/plots
+      - static_volume_1:/data/static
       - ./config/config.yml:/app/tides_pipe/config/config.yml:ro
     ports:
       - "8001:8001"  # uvicorn port for ingest_api
