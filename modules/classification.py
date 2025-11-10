@@ -32,6 +32,20 @@ class Classifier(Module):
         return result
 
 def run(night=None, objects=None, logger=None, config=None):
+    # Handle None config gracefully
+    if config is None:
+        logger.error("Config is None - this suggests a config loading issue in the manager")
+        logger.info("Using minimal default configuration for classification")
+        config = {
+            "classification": {
+                "test": True,
+                "codes": []
+            },
+            "data_paths": {
+                "spectra_dir": "/data/spectra"
+            }
+        }
+    
     classification_config = config.get("classification", {})
     data_paths_config = config.get("data_paths", {})  # Load the data_paths block
     test_mode = classification_config.get("test", False)  # Read test mode from config

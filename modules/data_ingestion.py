@@ -70,13 +70,13 @@ class DataIngestion(Module):
         self.logger.info(f"Archives will be saved in archive directory: {archive_night_dir}")
 
         if not os.path.exists(night_dir):
-            self.logger.info(f"No data found for night {night} in ")
-            return
+            self.logger.info(f"No data found for night {night} in {night_dir}")
+            return []
 
         files = [f for f in os.listdir(night_dir) if f.endswith(".fits")]
         if not files:
             self.logger.info(f"No new files found for night {night}.")
-            return
+            return []
 
         if not os.path.exists(spectra_night_dir):
             os.makedirs(spectra_night_dir)
@@ -96,7 +96,7 @@ class DataIngestion(Module):
                 self.logger.error(f"Error processing {file}: {e}")
 
         #self.archive_files(night_dir, archive_night_dir) #TODO make this safe before enabling
-        self.set_done(True)
+        self.set_done(True, night)
         return obj_names
 
     def process_file(self, file_path, spectra_night_dir):

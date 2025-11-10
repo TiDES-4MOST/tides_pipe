@@ -33,11 +33,18 @@ def setup_logger(night, config):
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
     level = getattr(logging, log_level, logging.INFO)
 
-    # Resolve log_dir: ENV > config > ./logs/{night}
+    # Resolve log_dir: ENV > structured data path
     env_log_dir = os.getenv("LOG_DIR")
-    log_dir = env_log_dir or config.get('log_dir')
-    if not log_dir:
-        log_dir = os.path.join(os.getcwd(), "logs", str(night))
+    if env_log_dir:
+        log_dir = env_log_dir
+    else:
+        # Use structured data path: /data/logs/{night}
+        data_paths = config.get("data_paths", {})
+        spectra_dir = data_paths.get("spectra_dir", "/data/spectra")
+        base_data_dir = os.path.dirname(spectra_dir)  # /data
+        log_dir = os.path.join(base_data_dir, "logs")
+        if night:
+            log_dir = os.path.join(log_dir, str(night))
 
     pathlib.Path(log_dir).mkdir(parents=True, exist_ok=True)
     log_file = os.path.join(log_dir, f"{night or 'run'}.log")
@@ -68,20 +75,6 @@ class PipelineManager:
         self.config_path = config_path or os.getenv("TIDES_CONFIG", "config/config.yml")
         self.config = self.load_config()
 
-        # BASE_DIR env override
-        base_dir_env = os.getenv("BASE_DIR")
-        if base_dir_env:
-            self.config['base_dir'] = base_dir_env
-
-        # Ensure base_dir exists
-        if 'base_dir' not in self.config or not self.config['base_dir']:
-            today = datetime.datetime.now().strftime('%Y%m%d')
-            default_dir = os.path.join(os.getcwd(), f"tides_pipe_run_{today}")
-            pathlib.Path(default_dir).mkdir(parents=True, exist_ok=True)
-            self.config['base_dir'] = default_dir
-        else:
-            pathlib.Path(self.config['base_dir']).mkdir(parents=True, exist_ok=True)
-
         # Load pluggable steps (modules or callables). Falls back to legacy modules list.
         self.steps = self.load_steps(modules)
         # Status tracking
@@ -91,7 +84,7 @@ class PipelineManager:
     def load_config(self):
         if not os.path.exists(self.config_path):
             # Minimal default to keep running in Docker if config is mounted later
-            return {"modules": [], "base_dir": ""}
+            return {"modules": []}
         with open(self.config_path, 'r') as f:
             return yaml.safe_load(f) or {"modules": []}
 
@@ -169,18 +162,43 @@ class PipelineManager:
 
     def _spectrum_path(self, tides_id: str | int) -> str:
         """
-        Resolve spectrum path for a tides_id using config.paths.spectra_dir or base_dir/spectra.
+        Resolve spectrum path for a tides_id using config.data_paths.spectra_dir with night directory.
         """
-        paths = self.config.get("paths", {})
-        spectra_dir = paths.get("spectra_dir") or os.path.join(self.config['base_dir'], "spectra")
+        # Use data_paths.spectra_dir from config - this should always be set in config
+        data_paths = self.config.get("data_paths", {})
+        spectra_dir = data_paths.get("spectra_dir")
+        
+        if not spectra_dir:
+            raise ValueError(f"spectra_dir not found in config.data_paths: {data_paths}")
+        
+        # Include night directory if current_night is set
+        if self.current_night:
+            spectra_dir = os.path.join(spectra_dir, self.current_night)
+        
         os.makedirs(spectra_dir, exist_ok=True)
         return os.path.join(spectra_dir, f"{tides_id}_spectrum.txt")
+
+    def _logs_dir(self) -> str:
+        """Get the logs directory path using data_paths structure."""
+        data_paths = self.config.get("data_paths", {})
+        # Get base data directory (parent of spectra_dir, deliveries_dir, etc.)
+        spectra_dir = data_paths.get("spectra_dir", "/data/spectra")
+        base_data_dir = os.path.dirname(spectra_dir)  # /data
+        logs_dir = os.path.join(base_data_dir, "logs")
+        
+        # Include night directory if current_night is set
+        if self.current_night:
+            logs_dir = os.path.join(logs_dir, self.current_night)
+            
+        os.makedirs(logs_dir, exist_ok=True)
+        return logs_dir
 
     def set_module_done(self, module_name: str, status: bool):
         """
         Record DONE/FAILED for a pseudo-module (e.g., classification_api) to integrate with check_module_done().
         """
-        module_done_file = os.path.join(self.config['base_dir'], f"{module_name}_DONE.txt")
+        logs_dir = self._logs_dir()
+        module_done_file = os.path.join(logs_dir, f"{module_name}_DONE.txt")
         with open(module_done_file, 'w') as f:
             f.write("TRUE\n" if status else "FALSE\n")
 
@@ -188,7 +206,17 @@ class PipelineManager:
         """
         Check if a module has been marked as done.
         """
-        module_done_file = os.path.join(self.config['base_dir'], f"{module_name}_DONE.txt")
+        logs_dir = self._logs_dir()
+        # Convert module name to class name format for file lookup
+        # e.g., "data_ingestion" -> "dataingestion"
+        if module_name == "data_ingestion":
+            file_module_name = "dataingestion"
+        elif module_name == "classification_api":
+            file_module_name = "classification_api"
+        else:
+            file_module_name = module_name
+            
+        module_done_file = os.path.join(logs_dir, f"{file_module_name}_DONE.txt")
         if os.path.exists(module_done_file):
             with open(module_done_file, 'r') as f:
                 content = f.read().strip()
@@ -200,40 +228,61 @@ class PipelineManager:
         Call classifier microservices (SNID/NGSF) via HTTP for each tides_id concurrently,
         then persist results to the remote DB.
         """
+        logger.info(f"[classification_api] Starting classification for {len(obj_names or [])} objects")
+        
         # Open DB connection once
         conn = None
         try:
             creds = dbutil.load_creds(self.config)
             conn = dbutil.connect(creds)
+            logger.info(f"[classification_api] Database connection established")
         except Exception as e:
-            logger.error(f"DB connection failed; will skip persistence: {e}")
+            logger.error(f"[classification_api] DB connection failed; will skip persistence: {e}")
 
         async def tagged(method: str, tides_id: int, coro):
             res = await coro
             return method, tides_id, res
 
         tasks = []
+        logger.info(f"[classification_api] Looking for spectra in night directory: {self.current_night}")
+        logger.info(f"[classification_api] Config data_paths: {self.config.get('data_paths', {})}")
+        
+        # Get enabled classifiers from config
+        classification_config = self.config.get('classification', {})
+        enabled_classifiers = classification_config.get('enabled_classifiers', ['snid', 'ngsf'])
+        logger.info(f"[classification_api] Enabled classifiers: {enabled_classifiers}")
+        
         for tid in obj_names or []:
             spath = self._spectrum_path(tid)
             if not os.path.exists(spath):
-                logger.warning(f"Spectrum not found for {tid}: {spath}")
+                logger.warning(f"[classification_api] Spectrum not found for {tid}: {spath}")
                 continue
+            logger.debug(f"[classification_api] Found spectrum for {tid}: {spath}")
             tid_int = int(tid)
-            tasks.append(tagged("snid", tid_int, classify_snid_async(tid_int, spath, snid_params or {})))
-            tasks.append(tagged("ngsf", tid_int, classify_ngsf_async(tid_int, spath, ngsf_params or {})))
+            
+            # Add tasks for enabled classifiers only
+            if 'snid' in enabled_classifiers:
+                tasks.append(tagged("snid", tid_int, classify_snid_async(tid_int, spath, snid_params or {})))
+            if 'ngsf' in enabled_classifiers:
+                tasks.append(tagged("ngsf", tid_int, classify_ngsf_async(tid_int, spath, ngsf_params or {})))
+            # TODO: Add qxp when classify_qxp_async is implemented
+            # if 'qxp' in enabled_classifiers:
+            #     tasks.append(tagged("qxp", tid_int, classify_qxp_async(tid_int, spath, qxp_params or {})))
 
         classified_ok = 0
         ok = True
-        async for coro in asyncio.as_completed(tasks):
+        logger.info(f"[classification_api] Processing {len(tasks)} classification tasks")
+        
+        for coro in asyncio.as_completed(tasks):
             try:
                 method, tid_int, res = await coro
-                logger.info(f"{method} result for {tid_int}: {res}")
+                logger.info(f"[classification_api] {method} result for {tid_int}: {res}")
                 if conn:
                     save_result(conn, tid_int, method, res, logger=logger)
                 classified_ok += 1
             except Exception as e:
                 ok = False
-                logger.error(f"Classifier call failed: {e}", exc_info=True)
+                logger.error(f"[classification_api] Classifier call failed: {e}", exc_info=True)
         
         # Update status after classification progress/completion
         if self._status_conn and self.current_night:
@@ -274,9 +323,11 @@ class PipelineManager:
             logger.info(f"Reading classification results from {classification_results_file}")
             
             # Get database connection
-            conn = self.connect_to_db()
-            if not conn:
-                logger.error("Could not connect to database for saving classification results")
+            try:
+                creds = dbutil.load_creds(self.config)
+                conn = dbutil.connect(creds)
+            except Exception as e:
+                logger.error(f"Could not connect to database for saving classification results: {e}")
                 return
                 
             # Process each row in the results file
@@ -284,7 +335,8 @@ class PipelineManager:
                 tid_int = int(row.get('obj_name', 0))  # Assuming obj_name contains the tides_id
                 
                 # Check for different classification methods in the row
-                for method in ['snid', 'ngsf',]:  # Add other methods as needed
+                enabled_classifiers = self.config.get('classification', {}).get('enabled_classifiers', ['snid', 'ngsf'])
+                for method in enabled_classifiers:
                     result_key = f'auto_class_{method}'
                     prob_key = f'auto_class_prob_{method}'
                     subclass_key = f'auto_class_subclass_{method}'
@@ -347,7 +399,25 @@ class PipelineManager:
 
             for step in self.steps:
                 name, kind, runner, params = step["name"], step["kind"], step["runner"], step.get("params") or {}
-                logger.info(f"Running step: {name} ({kind})")
+                
+                # Check if step is already completed
+                if self.check_module_done(name):
+                    logger.info(f"[{name}] Step already completed, skipping")
+                    # For data_ingestion, need to reload object list from previous run
+                    if name == "data_ingestion" and not obj_names:
+                        # Try to get object list from previous successful run
+                        try:
+                            logs_dir = self._logs_dir()
+                            objects_file = os.path.join(logs_dir, "data_ingestion_objects.txt")
+                            if os.path.exists(objects_file):
+                                with open(objects_file, 'r') as f:
+                                    obj_names = [line.strip() for line in f if line.strip()]
+                                logger.info(f"[{name}] Loaded {len(obj_names)} objects from previous run")
+                        except Exception as e:
+                            logger.warning(f"[{name}] Could not load objects from previous run: {e}")
+                    continue
+                
+                logger.info(f"[{name}] Starting step: {name} ({kind})")
                 # Pre-step status/event
                 if self._status_conn and self.current_night:
                     try:
@@ -364,6 +434,18 @@ class PipelineManager:
                         out = runner(night, logger, self.config)
                         if isinstance(out, list):
                             obj_names = out
+                            # Save object list for data_ingestion to enable skipping
+                            if name == "data_ingestion" and obj_names:
+                                try:
+                                    logs_dir = self._logs_dir()
+                                    objects_file = os.path.join(logs_dir, "data_ingestion_objects.txt")
+                                    with open(objects_file, 'w') as f:
+                                        for obj in obj_names:
+                                            f.write(f"{obj}\n")
+                                    logger.info(f"[{name}] Saved {len(obj_names)} objects for future runs")
+                                except Exception as e:
+                                    logger.warning(f"[{name}] Could not save object list: {e}")
+                            
                             # Post-ingestion status: record count
                             if self._status_conn and self.current_night and name == "data_ingestion":
                                 try:
@@ -410,7 +492,7 @@ class PipelineManager:
                     except Exception:
                         pass
             else:
-                self.clear_pipeline_done_signal(logger)
+                logger.info("Some steps not completed; will retry incomplete steps on next run")
 
             if one_shot:
                 logger.info("One-shot mode enabled; exiting after one iteration.")

@@ -22,6 +22,7 @@ services:
       - ${DATA_DELIVERIES_PATH:-./deliveries}:${DELIVERIES_DIR}
       - ${DATA_SPECTRA_PATH:-./spectra}:${SPECTRA_DIR}
       - ${DATA_STATIC_PATH:-./static/plots}:${STATIC_PLOTS_DIR}
+      - ${DATA_LOGS_PATH:-./logs}:${LOGS_DIR}
       - ./config/config.yml:${CONFIG_PATH}/config.yml:ro
     ports:
       - "8001:8001"  # uvicorn port for ingest_api

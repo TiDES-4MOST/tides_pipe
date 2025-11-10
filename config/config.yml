@@ -1,6 +1,6 @@
 modules:
   - data_ingestion
-  - classification
+  - classification_api
 
 
 data_ingestion:
@@ -8,6 +8,10 @@ data_ingestion:
   
 classification:
   test: true  # Enable test mode for classification
+  enabled_classifiers:  # Which classifiers to run
+    - snid
+    #- ngsf
+    # - qxp  # Add qxp when available
   codes:
     - code: "snid"
       config_file: "/path/to/snid/config.yml"
