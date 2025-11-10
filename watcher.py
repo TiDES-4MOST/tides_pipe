@@ -3,6 +3,10 @@ from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 PATTERN = re.compile(r".*\.fits$", re.IGNORECASE)
 DELIVERIES_DIR = os.getenv("DELIVERIES_DIR", "/data/deliveries")
 PIPELINE_API = os.getenv("PIPELINE_API", "http://pipeline:8001")
@@ -33,15 +37,18 @@ class MECHandler(FileSystemEventHandler):
 
     def on_created(self, event):
         if not event.is_directory and PATTERN.match(event.src_path):
+            logger.info(f"File created: {event.src_path}")
             self._schedule(event.src_path)
 
     def on_modified(self, event):
         if not event.is_directory and PATTERN.match(event.src_path):
+            logger.info(f"File modified: {event.src_path}")
             self._schedule(event.src_path)
 
     def _schedule(self, path: str):
         n = night_from_path(path)
         if n:
+            logger.info(f"Scheduled night {n} for file {path}")
             self._pending[n] = time.time()
             logging.debug("Scheduled night %s from path %s", n, path)
 
@@ -62,15 +69,12 @@ class MECHandler(FileSystemEventHandler):
 def main():
     setup_logging()
     os.makedirs(DELIVERIES_DIR, exist_ok=True)
-    observer_cls = PollingObserver if USE_POLLING else Observer
+    logger.info(f"Starting watcher on {DELIVERIES_DIR}")
     handler = MECHandler()
     obs = observer_cls()
     obs.schedule(handler, DELIVERIES_DIR, recursive=True)
     obs.start()
-    logging.info(
-        "Watcher started. dir=%s api=%s observer=%s debounce=%.1fs",
-        DELIVERIES_DIR, PIPELINE_API, obs.__class__.__name__, DEBOUNCE_SEC
-    )
+    logger.info(f"Watcher started, monitoring {DELIVERIES_DIR} recursively")
     try:
         while True:
             time.sleep(2)

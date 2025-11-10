@@ -1,14 +1,13 @@
-version: "3.9"
 services:
   pipeline:
     build:
       context: .
       dockerfile: ./Dockerfile
     environment:
-      TIDES_CONFIG: /app/tides_pipe/config/config.yml
-      DELIVERIES_DIR: /data/deliveries
-      SPECTRA_DIR: /data/spectra
-      STATIC_PLOTS_DIR: /data/static/plots
+      TIDES_CONFIG: ${CONFIG_PATH}/config.yml
+      DELIVERIES_DIR: ${DELIVERIES_DIR}
+      SPECTRA_DIR: ${SPECTRA_DIR}
+      STATIC_PLOTS_DIR: ${STATIC_PLOTS_DIR}
       # remote DB creds provided at runtime (compose .env or CI secrets)
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT:-5432}
@@ -41,7 +40,7 @@ services:
       dockerfile: ./Dockerfile.watcher
     command: ["python", "-u", "/app/watcher.py"]
     environment:
-      DELIVERIES_DIR: /data/deliveries
+      DELIVERIES_DIR: ${DELIVERIES_DIR}
       PIPELINE_API: http://pipeline:8001
       PYTHONUNBUFFERED: "1"
       LOG_LEVEL: INFO
