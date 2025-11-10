@@ -39,26 +39,17 @@ services:
     build:
       context: .
       dockerfile: ./Dockerfile.watcher
+    command: ["python", "-u", "/app/watcher.py"]
     environment:
       DELIVERIES_DIR: /data/deliveries
       PIPELINE_API: http://pipeline:8001
+      PYTHONUNBUFFERED: "1"
+      LOG_LEVEL: INFO
+      WATCHER_POLLING: "1"   # enable if /mnt/data is NFS/CIFS/remote
     volumes:
-      - /mnt/data/deliveries/data/deliveries
+      - /mnt/data/deliveries:/data/deliveries:rw
     depends_on:
       - pipeline
-
-#  snid_api:
-#    build: ./modules/classifiers/snid_docker/
-#    expose: ["8000"]
-#    volumes:
-#      - ./spectra:/data/spectra:ro
-
-#  ngsf_api:
-#    build: ./modules/classifiers/ngsf_docker/
-#    expose: ["8000"]
-#    working_dir: /data/spectra
-#    volumes:
-#      - ./spectra:/data/spectra:ro
 
   qxp_api:
     build: ./modules/classifiers/qxp/
