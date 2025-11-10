@@ -40,7 +40,7 @@ services:
       dockerfile: ./Dockerfile.watcher
     command: ["python", "-u", "/app/watcher.py"]
     environment:
-      DELIVERIES_DIR: ${DELIVERIES_DIR}
+      DELIVERIES_DIR: /data/deliveries
       PIPELINE_API: http://pipeline:8001
       PYTHONUNBUFFERED: "1"
       LOG_LEVEL: INFO

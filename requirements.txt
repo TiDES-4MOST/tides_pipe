@@ -5,10 +5,5 @@ watchdog
 psycopg2-binary
 astropy
 pyyaml
-<<<<<<< HEAD
 pandas
 matplotlib
-=======
-matplotlib
-pandas
->>>>>>> 295534b (new reqs)
