@@ -71,6 +71,8 @@ def main():
     os.makedirs(DELIVERIES_DIR, exist_ok=True)
     logger.info(f"Starting watcher on {DELIVERIES_DIR}")
     handler = MECHandler()
+    observer_cls = PollingObserver if USE_POLLING else Observer  # choose implementation
+    logger.info(f"Using {'PollingObserver' if USE_POLLING else 'Observer'} (polling={USE_POLLING})")
     obs = observer_cls()
     obs.schedule(handler, DELIVERIES_DIR, recursive=True)
     obs.start()
