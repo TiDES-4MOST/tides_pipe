@@ -10,9 +10,20 @@ import yaml
 
 from importlib import import_module
 import asyncio
+import time
 
 from tides_pipe.modules.classifiers.snid_handler import SnidHandler
 from tides_pipe.utils.paths import spectra_night_dir as util_spectra_night_dir, spectrum_path as util_spectrum_path
+
+# Optional DB/status helpers (don’t break if missing)
+try:
+    from tides_pipe.utils import db as dbutil  # provides load_creds/connect
+except Exception:
+    dbutil = None
+try:
+    from tides_pipe.modules import status_store  # provides upsert_status/add_event
+except Exception:
+    status_store = None
 
 _STOP = False
 
@@ -393,6 +404,8 @@ class PipelineManager:
     def run(self, night=None, objects=None, one_shot: bool = False, sleep_seconds: int = 60):
         logger = setup_logger(night, self.config)
         self.current_night = str(night or "")
+        obj_names: list = []  # ensure defined even if ingestion didn’t run
+
         try:
             sdir = util_spectra_night_dir(self.config, self.current_night, ensure=True)
             logger.info(f"[config] spectra_night_dir={sdir} (real={os.path.realpath(sdir)})")
@@ -409,9 +422,10 @@ class PipelineManager:
         logger.info(f"[config] Thumbnails will be saved to {thumb_dir}")
         # Open status DB connection (optional; continue if not available)
         try:
-            creds = dbutil.load_creds(self.config)
-            self._status_conn = dbutil.connect(creds)
-            if self.current_night:
+            if dbutil:
+                creds = dbutil.load_creds(self.config)
+                self._status_conn = dbutil.connect(creds)
+            if self._status_conn and self.current_night and status_store:
                 status_store.upsert_status(self._status_conn, self.current_night, "running", message="Manager started")
                 status_store.add_event(self._status_conn, self.current_night, "manager", "INFO", "Manager loop starting")
         except Exception as e:
@@ -420,7 +434,7 @@ class PipelineManager:
         while True:
             if _STOP:
                 logger.info("Shutdown signal received; exiting manager loop.")
-                if self._status_conn and self.current_night:
+                if self._status_conn and self.current_night and status_store:
                     try:
                         status_store.add_event(self._status_conn, self.current_night, "manager", "INFO", "Shutdown requested")
                         status_store.upsert_status(self._status_conn, self.current_night, "error", message="Interrupted", finished=True)
@@ -433,19 +447,39 @@ class PipelineManager:
 
             for step in self.steps:
                 name = step["name"]
-                kind = step.get("kind", "builtin")
-                # Skip if already done
+                kind = step.get("kind", "module")
+
                 if self.check_module_done(name):
                     logger.info(f"[{name}] Step already completed, skipping")
                     continue
 
+                if kind == "module" and name == "data_ingestion":
+                    try:
+                        logger.info(f"[{name}] Running ingestion for night {self.current_night}")
+                        returned = step["runner"](night=self.current_night, logger=logger, config=self.config)
+                        if returned is not None:
+                            obj_names = [str(o) for o in returned]
+                            logger.info(f"[{name}] Ingestion produced {len(obj_names)} objects: {obj_names[:10]}{'...' if len(obj_names)>10 else ''}")
+                        else:
+                            logger.warning(f"[{name}] Returned None (no objects)")
+                        self.set_module_done(name, True)
+                    except Exception as e:
+                        logger.error(f"[{name}] Failed: {e}", exc_info=True)
+                        self.set_module_done(name, False)
+                        all_done = False
+                    continue
+
                 if kind == "builtin" and name == "classification_api":
-                    results = self._run_snid_classification(self.current_night, obj_names or [], logger)
-                    logger.info(f"[{name}] SNID finished for {len(results)} objects")
+                    if not obj_names:
+                        logger.warning(f"[{name}] No objects to classify (obj_names empty)")
+                        self.set_module_done(name, True)
+                        continue
+                    results = self._run_snid_classification(self.current_night, obj_names, logger)
+                    logger.info(f"[{name}] SNID classified {len(results)} objects")
                     self.set_module_done(name, True)
                     continue
 
-                # ...existing code for other steps...
+                # ...rest of loop unchanged...
 
     def list_spectra_objects(self, night: str) -> list[int]:
         """
