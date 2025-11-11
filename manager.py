@@ -205,20 +205,13 @@ class PipelineManager:
         Check if a module has been marked as done.
         """
         logs_dir = self._logs_dir()
-        # Convert module name to class name format for file lookup
-        # e.g., "data_ingestion" -> "dataingestion"
-        if module_name == "data_ingestion":
-            file_module_name = "dataingestion"
-        elif module_name == "classification_api":
-            file_module_name = "classification_api"
-        else:
-            file_module_name = module_name
-            
-        module_done_file = os.path.join(logs_dir, f"{file_module_name}_DONE.txt")
+        module_done_file = os.path.join(logs_dir, f"{module_name}_DONE.txt")
         if os.path.exists(module_done_file):
-            with open(module_done_file, 'r') as f:
-                content = f.read().strip()
-                return content == "TRUE"
+            try:
+                with open(module_done_file, 'r') as f:
+                    return f.read().strip().upper().startswith("TRUE")
+            except Exception:
+                return False
         return False
 
     async def _run_classifiers_api(self, obj_names: list[str | int], logger: logging.Logger, snid_params: dict | None = None, ngsf_params: dict | None = None):
@@ -480,6 +473,21 @@ class PipelineManager:
                     continue
 
                 # ...rest of loop unchanged...
+
+            for step in self.steps:
+                # ...existing step handling...
+                pass  # (keep existing code)
+            # After processing all steps:
+            if all_done:
+                logger.info("All steps completed; exiting manager loop.")
+                break
+            if all(self.check_module_done(s["name"]) for s in self.steps):
+                logger.info("All steps reported DONE; stopping loop.")
+                break
+            if one_shot:
+                logger.info("one_shot=True; stopping after single iteration.")
+                break
+            time.sleep(sleep_seconds)
 
     def list_spectra_objects(self, night: str) -> list[int]:
         """
