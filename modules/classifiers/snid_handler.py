@@ -4,7 +4,7 @@ import time
 import glob
 import json
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple, Union
 
 import httpx
 try:
@@ -13,7 +13,8 @@ except Exception:
     h5py = None
 
 from tides_pipe.modules.classifiers.classification_store import save_result
-from classification_handlers import ClassificationHandler  # base class
+# Correct import of the dynamic loader (if you need to reference it here later)
+from tides_pipe.modules.classifiers.classification_handlers import ClassificationHandler  # noqa: F401
 
 SNID_API_URL = (
     os.getenv("CLASSIFIER_SNID_URL")

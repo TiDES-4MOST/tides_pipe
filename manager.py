@@ -5,6 +5,7 @@ import os
 import logging
 import signal
 from typing import List, Optional
+import pathlib
 
 from tides_pipe.modules.classifiers.snid_handler import SnidHandler
 from tides_pipe.utils.paths import spectra_night_dir as util_spectra_night_dir, spectrum_path as util_spectrum_path
@@ -441,4 +442,49 @@ class PipelineManager:
                     continue
 
                 # ...existing code for other steps...
+
+    def list_spectra_objects(self, night: str) -> list[int]:
+        """
+        List tides_ids from spectra files in /data/spectra/<night>.
+        Accepts files like <id>_spectrum.txt or <id>.txt.
+        """
+        d = util_spectra_night_dir(self.config, str(night), ensure=False)
+        ids: list[int] = []
+        if os.path.isdir(d):
+            for fn in os.listdir(d):
+                if not fn.endswith(".txt"):
+                    continue
+                name = fn[:-4]  # strip .txt
+                if name.endswith("_spectrum"):
+                    name = name[:-9]
+                try:
+                    ids.append(int(name))
+                except ValueError:
+                    continue
+        return sorted(set(ids))
+
+    def classify_night(self, night: str, objects: Optional[list[int]] = None, logger: Optional[logging.Logger] = None) -> dict:
+        """
+        Run SNID classification only for the given night.
+        If objects is None, derive from spectra directory.
+        """
+        self.current_night = str(night)
+        lg = logger or setup_logger(night, self.config)
+        lg.info(f"[classify_night] Starting SNID-only classification for night={night}")
+
+        # Ensure thumbs go to spectra night dir (consistent behavior)
+        thumb_dir = self._spectra_night_dir()
+        self.config.setdefault("data_paths", {})["static_plots_dir"] = thumb_dir
+        os.environ["STATIC_PLOTS_DIR"] = thumb_dir
+
+        obj_names = [str(o) for o in (objects or self.list_spectra_objects(night))]
+        if not obj_names:
+            lg.warning(f"[classify_night] No spectra found in {thumb_dir} for night={night}")
+            return {"night": night, "count": 0, "results": []}
+
+        results = self._run_snid_classification(self.current_night, obj_names, lg)
+        lg.info(f"[classify_night] SNID finished for {len(results)} objects")
+        # Mark classification as done for this run
+        self.set_module_done("classification_api", True)
+        return {"night": night, "count": len(results), "results": results}
 
