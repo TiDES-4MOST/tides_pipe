@@ -26,4 +26,4 @@ data_paths:
   deliveries_dir: "/data/deliveries"  # Container path for deliveries
   archive_dir: "/data/archive"
   spectra_dir: "/data/spectra"  # Container path for spectra
-  static_plots_dir: "/data/static/plots"
+  #static_plots_dir: "/data/static/plots"

@@ -16,6 +16,7 @@ from tides_pipe.modules import db as dbutil
 from tides_pipe.modules.classifiers.classification_store import save_result
 from importlib import import_module
 from tides_pipe.modules import status_store
+from tides_pipe.utils.paths import spectra_night_dir as util_spectra_night_dir, spectrum_path as util_spectrum_path
 
 _STOP = False
 
@@ -160,23 +161,11 @@ class PipelineManager:
                 logging.getLogger("tides_manager").error(f"Failed to load module '{name}': {e}", exc_info=True)
         return steps
 
+    def _spectra_night_dir(self) -> str:
+        return util_spectra_night_dir(self.config, self.current_night, ensure=True)
+
     def _spectrum_path(self, tides_id: str | int) -> str:
-        """
-        Resolve spectrum path for a tides_id using config.data_paths.spectra_dir with night directory.
-        """
-        # Use data_paths.spectra_dir from config - this should always be set in config
-        data_paths = self.config.get("data_paths", {})
-        spectra_dir = data_paths.get("spectra_dir")
-        
-        if not spectra_dir:
-            raise ValueError(f"spectra_dir not found in config.data_paths: {data_paths}")
-        
-        # Include night directory if current_night is set
-        if self.current_night:
-            spectra_dir = os.path.join(spectra_dir, self.current_night)
-        
-        os.makedirs(spectra_dir, exist_ok=True)
-        return os.path.join(spectra_dir, f"{tides_id}_spectrum.txt")
+        return util_spectrum_path(self.config, self.current_night, tides_id, ensure_dir=True)
 
     def _logs_dir(self) -> str:
         """Get the logs directory path using data_paths structure."""
@@ -369,10 +358,13 @@ class PipelineManager:
     def run(self, night=None, objects=None, one_shot: bool = False, sleep_seconds: int = 60):
         logger = setup_logger(night, self.config)
         logger.info(f"Pipeline starting (night={night}, one_shot={one_shot}, sleep={sleep_seconds}s)")
-        global _STOP
-        obj_names = []  # carry-forward objects between steps
-        # Night context for status/events
         self.current_night = str(night or "")
+        # Redirect thumbnails to spectra night dir (single source of truth)
+        thumb_dir = self._spectra_night_dir()
+        self.config.setdefault("data_paths", {})
+        self.config["data_paths"]["static_plots_dir"] = thumb_dir
+        os.environ["STATIC_PLOTS_DIR"] = thumb_dir
+        logger.info(f"[config] Thumbnails will be saved to {thumb_dir}")
         # Open status DB connection (optional; continue if not available)
         try:
             creds = dbutil.load_creds(self.config)

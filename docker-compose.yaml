@@ -7,7 +7,6 @@ services:
       TIDES_CONFIG: /app/tides_pipe/config/config.yml
       DELIVERIES_DIR: /data/deliveries
       SPECTRA_DIR: /data/spectra
-      STATIC_PLOTS_DIR: /data/static/plots
       # remote DB creds provided at runtime (compose .env or CI secrets)
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT:-5432}
