@@ -6,6 +6,7 @@ import logging
 import signal
 from typing import List, Optional
 import pathlib
+import yaml
 
 from tides_pipe.modules.classifiers.snid_handler import SnidHandler
 from tides_pipe.utils.paths import spectra_night_dir as util_spectra_night_dir, spectrum_path as util_spectrum_path
