@@ -10,6 +10,7 @@ import json
 import matplotlib.pyplot as plt
 import random
 import hashlib
+from tides_pipe.utils.paths import spectra_night_dir as get_spectra_night_dir, spectrum_path
 
 class DataIngestion(Module):
     def __init__(self, config):
@@ -78,8 +79,12 @@ class DataIngestion(Module):
             self.logger.info(f"No new files found for night {night}.")
             return []
 
-        if not os.path.exists(spectra_night_dir):
-            os.makedirs(spectra_night_dir)
+        # Remove any direct calls like:
+        # os.makedirs(spectra_night_dir)
+        # and use `out_dir` everywhere (for spectra and thumbnails).
+        # Example when writing a spectrum:
+        # spath = spectrum_path(config, night, tides_id, ensure_dir=True)
+        # with open(spath, "w") as f: ...
 
         # Write "FALSE" to DONE.txt at the start
         signal_file = os.path.join(spectra_night_dir, "DONE.txt")

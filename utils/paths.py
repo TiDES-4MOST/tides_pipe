@@ -7,6 +7,9 @@ def _data_paths(config: dict) -> dict:
 def spectra_night_dir(config: dict, night: str | None, ensure: bool = True) -> str:
     base = _data_paths(config).get("spectra_dir", "/data/spectra")
     d = os.path.join(base, str(night)) if night else base
+    # Guard against symlink/bind-mount loops (night dir resolving to base)
+    if os.path.realpath(d) == os.path.realpath(base) and night:
+        raise RuntimeError(f"spectra_night_dir resolves to base ({base}); check for symlink/mount loop at {d}")
     if ensure:
         os.makedirs(d, exist_ok=True)
     return d

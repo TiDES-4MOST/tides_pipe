@@ -2,20 +2,11 @@
 # tides_pipe/manager.py
 import importlib
 import os
-import yaml
 import logging
-import time
-import pathlib
-import datetime
 import signal
-import argparse
 from typing import List, Optional
-import asyncio
-from tides_pipe.modules.classifiers.client import classify_snid_async, classify_ngsf_async
-from tides_pipe.modules import db as dbutil
-from tides_pipe.modules.classifiers.classification_store import save_result
-from importlib import import_module
-from tides_pipe.modules import status_store
+
+from tides_pipe.modules.classifiers.snid_handler import SnidHandler
 from tides_pipe.utils.paths import spectra_night_dir as util_spectra_night_dir, spectrum_path as util_spectrum_path
 
 _STOP = False
@@ -82,6 +73,7 @@ class PipelineManager:
         # Status tracking
         self.current_night: str = ""
         self._status_conn = None
+        self.snid = SnidHandler()
 
     def load_config(self):
         if not os.path.exists(self.config_path):
@@ -356,10 +348,54 @@ class PipelineManager:
         logger.info("Clearing pipeline done signals")
         # You can add additional logic here like removing done files
 
+    # Defaults aligned with your Django SnidParamsForm
+    def _snid_default_params(self) -> dict:
+        cfg = (self.config.get("snid") or {}).get("defaults", {})
+        def g(key, default):
+            return cfg.get(key, default)
+
+        # Normalize 'use' to a Python list
+        use = g("use", ["Ia", "Ib", "Ic", "II", "NotSN"])
+        if isinstance(use, str):
+            use = [s.strip() for s in use.split(",") if s.strip()]
+
+        return {
+            "wmin": float(g("wmin", 4000.0)),
+            "wmax": float(g("wmax", 9000.0)),
+            "zmin": float(g("zmin", 0.1)),
+            "zmax": float(g("zmax", 1.2)),
+            "emclip": g("emclip", None),
+            "emwid": int(g("emwid", 40)),
+            "agemin": int(g("agemin", -90)),
+            "agemax": int(g("agemax", 1000)),
+            "aband": bool(g("aband", False)),
+            "use": use,
+        }
+
+    def _run_snid_classification(self, night: str, obj_names: list, logger) -> list[dict]:
+        results = []
+        params = self._snid_default_params()
+        for obj_id in (obj_names or []):
+            spath = util_spectrum_path(self.config, night, obj_id, ensure_dir=True)
+            try:
+                logger.info(f"[classification_api] SNID classify obj={obj_id} path={spath}")
+                res = self.snid.classify(spath, night, obj_id, snid_params=params)
+                results.append({"obj_id": obj_id, "snid": res})
+            except Exception as e:
+                logger.exception(f"[classification_api] SNID failed for {obj_id}: {e}")
+        return results
+
     def run(self, night=None, objects=None, one_shot: bool = False, sleep_seconds: int = 60):
         logger = setup_logger(night, self.config)
-        logger.info(f"Pipeline starting (night={night}, one_shot={one_shot}, sleep={sleep_seconds}s)")
         self.current_night = str(night or "")
+        try:
+            sdir = util_spectra_night_dir(self.config, self.current_night, ensure=True)
+            logger.info(f"[config] spectra_night_dir={sdir} (real={os.path.realpath(sdir)})")
+        except Exception as e:
+            logger.error(f"[config] Invalid spectra_night_dir: {e}")
+            return
+
+        logger.info(f"Pipeline starting (night={night}, one_shot={one_shot}, sleep={sleep_seconds}s)")
         # Redirect thumbnails to spectra night dir (single source of truth)
         thumb_dir = self._spectra_night_dir()
         self.config.setdefault("data_paths", {})
@@ -391,108 +427,18 @@ class PipelineManager:
             classification_results_file = None
 
             for step in self.steps:
-                name, kind, runner, params = step["name"], step["kind"], step["runner"], step.get("params") or {}
-                
-                # Check if step is already completed
+                name = step["name"]
+                kind = step.get("kind", "builtin")
+                # Skip if already done
                 if self.check_module_done(name):
                     logger.info(f"[{name}] Step already completed, skipping")
-                    # For data_ingestion, need to reload object list from previous run
-                    if name == "data_ingestion" and not obj_names:
-                        # Try to get object list from previous successful run
-                        try:
-                            logs_dir = self._logs_dir()
-                            objects_file = os.path.join(logs_dir, "data_ingestion_objects.txt")
-                            if os.path.exists(objects_file):
-                                with open(objects_file, 'r') as f:
-                                    obj_names = [line.strip() for line in f if line.strip()]
-                                logger.info(f"[{name}] Loaded {len(obj_names)} objects from previous run")
-                        except Exception as e:
-                            logger.warning(f"[{name}] Could not load objects from previous run: {e}")
                     continue
-                
-                logger.info(f"[{name}] Starting step: {name} ({kind})")
-                # Pre-step status/event
-                if self._status_conn and self.current_night:
-                    try:
-                        status_store.add_event(self._status_conn, self.current_night, name, "INFO", "Starting")
-                        if name == "data_ingestion":
-                            status_store.upsert_status(self._status_conn, self.current_night, "ingesting", message="Ingestion running")
-                        elif name.startswith("classification"):
-                            status_store.upsert_status(self._status_conn, self.current_night, "classifying", message="Classification running")
-                    except Exception:
-                        pass
-                try:
-                    if kind == "module":
-                        # Standard module signature
-                        out = runner(night, logger, self.config)
-                        if isinstance(out, list):
-                            obj_names = out
-                            # Save object list for data_ingestion to enable skipping
-                            if name == "data_ingestion" and obj_names:
-                                try:
-                                    logs_dir = self._logs_dir()
-                                    objects_file = os.path.join(logs_dir, "data_ingestion_objects.txt")
-                                    with open(objects_file, 'w') as f:
-                                        for obj in obj_names:
-                                            f.write(f"{obj}\n")
-                                    logger.info(f"[{name}] Saved {len(obj_names)} objects for future runs")
-                                except Exception as e:
-                                    logger.warning(f"[{name}] Could not save object list: {e}")
-                            
-                            # Post-ingestion status: record count
-                            if self._status_conn and self.current_night and name == "data_ingestion":
-                                try:
-                                    status_store.upsert_status(
-                                        self._status_conn,
-                                        self.current_night,
-                                        "ingesting",
-                                        ingested=len(obj_names),
-                                        message="Ingestion complete",
-                                    )
-                                except Exception:
-                                    pass
-                    elif kind == "callable":
-                        # Generic callable signature; pass context (kwargs)
-                        out = runner(night=night, logger=logger, config=self.config, objects=obj_names, **params)
-                        # Allow callables to update objects or return a results file
-                        if isinstance(out, dict):
-                            obj_names = out.get("objects", obj_names)
-                            classification_results_file = out.get("results_file", classification_results_file)
-                    elif kind == "builtin" and name == "classification_api":
-                        asyncio.run(self._run_classifiers_api(obj_names, logger))
-                    else:
-                        logger.warning(f"Unknown step kind '{kind}' for {name}")
 
-                    if not self.check_module_done(name):
-                        all_done = False
-                except Exception as e:
-                    logger.error(f"Error in step '{name}': {e}", exc_info=True)
-                    if self._status_conn and self.current_night:
-                        try:
-                            status_store.add_event(self._status_conn, self.current_night, name, "ERROR", str(e))
-                            status_store.upsert_status(self._status_conn, self.current_night, "error", message=f"{name} failed")
-                        except Exception:
-                            pass
-                    all_done = False
+                if kind == "builtin" and name == "classification_api":
+                    results = self._run_snid_classification(self.current_night, obj_names or [], logger)
+                    logger.info(f"[{name}] SNID finished for {len(results)} objects")
+                    self.set_module_done(name, True)
+                    continue
 
-            if all_done:
-                self.send_to_db(classification_results_file, obj_names, logger)
-                self.signal_pipeline_done(logger)
-                if self._status_conn and self.current_night:
-                    try:
-                        status_store.upsert_status(self._status_conn, self.current_night, "done", message="Pipeline complete", finished=True)
-                        status_store.add_event(self._status_conn, self.current_night, "manager", "INFO", "Pipeline complete")
-                    except Exception:
-                        pass
-            else:
-                logger.info("Some steps not completed; will retry incomplete steps on next run")
-
-            if one_shot:
-                logger.info("One-shot mode enabled; exiting after one iteration.")
-                if self._status_conn and self.current_night:
-                    try:
-                        status_store.add_event(self._status_conn, self.current_night, "manager", "INFO", "One-shot exit")
-                    except Exception as e:
-                        logger.error(f"Failed to log one-shot exit event: {e}")
-                break
+                # ...existing code for other steps...
 

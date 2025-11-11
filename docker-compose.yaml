@@ -14,12 +14,13 @@ services:
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
       DB_SSLMODE: ${DB_SSLMODE:-prefer}
-      CLASSIFIER_SNID_URL: ${CLASSIFIER_SNID_URL:-http://snid_api:8000}
-      CLASSIFIER_NGSF_URL: ${CLASSIFIER_NGSF_URL:-http://ngsf_api:8000}
+      SNID_API_URL: http://192.168.10.117:8000
+      NGSF_API_URL: http://192.168.10.117:8001
     volumes:
-      - /mnt/data/deliveries:/data/deliveries
-      - /mnt/data/spectra:/data/spectra
-      #- static_volume_1:/data/static
+      - /mnt/data/deliveries:/data/deliveries:rw
+      - /mnt/data/spectra:/data/spectra:rw
+      - /mnt/api_results/snid_api_runs:/snid_api_runs
+      - /mnt/api_results/ngsf_api_runs:/ngsf_api_runs
       - ./config/config.yml:/app/tides_pipe/config/config.yml:ro
     ports:
       - "8001:8001"  # uvicorn port for ingest_api

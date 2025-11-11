@@ -27,3 +27,20 @@ data_paths:
   archive_dir: "/data/archive"
   spectra_dir: "/data/spectra"  # Container path for spectra
   #static_plots_dir: "/data/static/plots"
+snid:
+  defaults:
+    wmin: 4000
+    wmax: 9000
+    zmin: 0.1
+    zmax: 1.2
+    emclip:
+    emwid: 40
+    agemin: -90
+    agemax: 1000
+    aband: false
+    use:
+      - Ia
+      - Ib
+      - Ic
+      - II
+      - NotSN
