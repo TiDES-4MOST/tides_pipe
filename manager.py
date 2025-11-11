@@ -51,22 +51,23 @@ def setup_logger(night, config):
     log_file = os.path.join(log_dir, f"{night or 'run'}.log")
 
     logger = logging.getLogger("tides_manager")
-    if logger.handlers:
-        return logger  # already configured
 
+    # Always set level and stop propagation to root to prevent duplicates
     logger.setLevel(level)
+    logger.propagate = False
 
-    # File handler
-    fh = logging.FileHandler(log_file)
-    fh.setLevel(level)
-    fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    logger.addHandler(fh)
+    # Add handlers only if not already present
+    if not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
+        fh = logging.FileHandler(log_file)
+        fh.setLevel(level)
+        fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        logger.addHandler(fh)
 
-    # Stdout handler for container logs
-    sh = logging.StreamHandler()
-    sh.setLevel(level)
-    sh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    logger.addHandler(sh)
+    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in logger.handlers):
+        sh = logging.StreamHandler()
+        sh.setLevel(level)
+        sh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        logger.addHandler(sh)
 
     return logger
 
