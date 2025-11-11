@@ -13,8 +13,6 @@ except Exception:
     h5py = None
 
 from tides_pipe.modules.classifiers.classification_store import save_result
-# Correct import of the dynamic loader (if you need to reference it here later)
-from tides_pipe.modules.classifiers.classification_handlers import ClassificationHandler  # noqa: F401
 
 SNID_API_URL = (
     os.getenv("CLASSIFIER_SNID_URL")
@@ -25,12 +23,25 @@ SNID_API_ENDPOINT = os.getenv("SNID_API_ENDPOINT", "/snid_params/").lstrip("/")
 SNID_API_OUT_ROOT = os.getenv("SNID_API_OUT_ROOT", "/snid_api_runs/pipeline_out")
 SNID_API_TIMEOUT = int(os.getenv("SNID_API_TIMEOUT", "600"))
 
-class SnidHandler(ClassificationHandler):
-    def __init__(self, config_file: Optional[str] = None):
-        super().__init__(config_file)
-        self.log = logging.getLogger("tides_snid")
+log = logging.getLogger("tides_snid")
 
-    def _target_dir(self, night: str, tides_id: str | int) -> str:
+def _infer_from_path(spectrum_path: str) -> Tuple[Optional[str], Optional[str]]:
+    try:
+        night = os.path.basename(os.path.dirname(spectrum_path))
+        base = os.path.basename(spectrum_path)
+        stem, _ = os.path.splitext(base)
+        if stem.endswith("_spectrum"):
+            stem = stem[:-9]
+        return night if night.isdigit() else None, stem
+    except Exception:
+        return None, None
+
+class SnidHandler:
+    def __init__(self, config: Optional[dict] = None):
+        self.config = config or {}
+        self.log = log
+
+    def _target_dir(self, night: str, tides_id: Union[str, int]) -> str:
         d = os.path.join(SNID_API_OUT_ROOT, str(night), str(tides_id))
         os.makedirs(d, exist_ok=True)
         return d
@@ -87,17 +98,45 @@ class SnidHandler(ClassificationHandler):
             self.log.warning(f"Failed to parse HDF5 {h5_path}: {e}")
         return out
 
-    def classify(self, spectrum_path: str, night: str, tides_id: str | int, snid_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        Run SNID classification via remote API.
-        spectrum_path is directly readable by the SNID API (shared mount).
-        """
-        out_dir = self._target_dir(night, tides_id)
+    def _default_params(self) -> Dict[str, Any]:
+        cfg = (self.config.get("snid") or {}).get("defaults", {})
+        def g(k, d): return cfg.get(k, d)
+        use = g("use", ["Ia", "Ib", "Ic", "II", "NotSN"])
+        if isinstance(use, str):
+            use = [s.strip() for s in use.split(",") if s.strip()]
+        return {
+            "wmin": float(g("wmin", 4000.0)),
+            "wmax": float(g("wmax", 9000.0)),
+            "zmin": float(g("zmin", 0.1)),
+            "zmax": float(g("zmax", 1.2)),
+            "emclip": g("emclip", None),
+            "emwid": int(g("emwid", 40)),
+            "agemin": int(g("agemin", -90)),
+            "agemax": int(g("agemax", 1000)),
+            "aband": bool(g("aband", False)),
+            "use": use,
+        }
+
+    def classify(
+        self,
+        spectrum_path: str,
+        night: Optional[str] = None,
+        tides_id: Optional[Union[str, int]] = None,
+        snid_params: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        if not night or not tides_id:
+            inf_night, inf_id = _infer_from_path(spectrum_path)
+            night = night or inf_night
+            tides_id = tides_id or inf_id
+        if not night or not tides_id:
+            raise ValueError("Unable to infer night/tides_id; provide them explicitly")
+
+        out_dir = self._target_dir(str(night), str(tides_id))
         self.log.info(f"[snid] out_dir={out_dir}")
-        # Match Django client: flat payload with 'spectrum' and 'output_dir' plus params
+
         payload = {"spectrum": spectrum_path, "output_dir": out_dir}
-        if snid_params:
-            payload.update(snid_params)
+        params = snid_params or self._default_params()
+        payload.update({k: v for k, v in params.items() if v is not None})
 
         api_resp = self._post_job(payload)
         self.log.info(f"[snid] API response: {api_resp}")
@@ -112,14 +151,13 @@ class SnidHandler(ClassificationHandler):
             result.update(self._parse_hdf5(h5_path))
             self.log.info(f"[snid] Result file: {h5_path}")
 
-        # Persist classification
         try:
             save_result(
                 code="snid",
                 tides_id=str(tides_id),
                 night=str(night),
                 result=result,
-                result_path=h5_path if result.get("status") == "ok" else None,
+                result_path=(h5_path if result.get("status") == "ok" else None),
             )
         except TypeError:
             try:
@@ -129,7 +167,6 @@ class SnidHandler(ClassificationHandler):
         except Exception as e:
             self.log.warning(f"[snid] save_result failed: {e}")
 
-        # done.txt marker
         try:
             with open(os.path.join(out_dir, "done.txt"), "w") as f:
                 f.write(json.dumps({
@@ -141,3 +178,6 @@ class SnidHandler(ClassificationHandler):
             self.log.warning(f"[snid] failed to write done.txt: {e}")
 
         return result
+
+# Keep dynamic-loader compatibility
+Handler = SnidHandler
