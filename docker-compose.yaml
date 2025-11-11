@@ -19,8 +19,8 @@ services:
     volumes:
       - /mnt/data/deliveries:/data/deliveries:rw
       - /mnt/data/spectra:/data/spectra:rw
-      - /mnt/api_results/snid_api_runs:/snid_api_runs
-      - /mnt/api_results/ngsf_api_runs:/ngsf_api_runs
+      - /mnt/api_results/snid_api_runs:/snid_api_runs:rw
+      - /mnt/api_results/ngsf_api_runs:/ngsf_api_runs:rw
       - ./config/config.yml:/app/tides_pipe/config/config.yml:ro
     ports:
       - "8001:8001"  # uvicorn port for ingest_api
@@ -33,6 +33,7 @@ services:
       - qxp_api
     #networks:
     #  - backend
+    user: "1000:1000"
 
   watcher:
     build:
