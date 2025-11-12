@@ -36,46 +36,42 @@ signal.signal(signal.SIGINT, _handle_sigterm)
 
 def setup_logger(night, config):
     """
-    File + stdout logger so `docker logs` shows output.
+    Per-night logger. Writes to: <spectra_dir>/<night>/logs/<night>.log
+    Falls back to <spectra_dir>/logs/pipeline.log if night is empty.
     """
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-    level = getattr(logging, log_level, logging.INFO)
-
-    # Resolve log_dir: ENV > structured data path
-    env_log_dir = os.getenv("LOG_DIR")
-    if env_log_dir:
-        log_dir = env_log_dir
-    else:
-        # Use structured data path: /data/logs/{night}
-        data_paths = config.get("data_paths", {})
-        spectra_dir = data_paths.get("spectra_dir", "/data/spectra")
-        base_data_dir = os.path.dirname(spectra_dir)  # /data
-        log_dir = os.path.join(base_data_dir, "logs")
-        if night:
-            log_dir = os.path.join(log_dir, str(night))
-
-    pathlib.Path(log_dir).mkdir(parents=True, exist_ok=True)
-    log_file = os.path.join(log_dir, f"{night or 'run'}.log")
+    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
 
     logger = logging.getLogger("tides_manager")
-
-    # Always set level and stop propagation to root to prevent duplicates
     logger.setLevel(level)
     logger.propagate = False
 
-    # Add handlers only if not already present
+    dp = (config.get("data_paths") or {})
+    spectra_dir = dp.get("spectra_dir", "/data/spectra")
+    if night:
+        log_dir = os.path.join(spectra_dir, str(night), "logs")
+        log_file = os.path.join(log_dir, f"{night}.log")
+    else:
+        log_dir = os.path.join(spectra_dir, "logs")
+        log_file = os.path.join(log_dir, "pipeline.log")
+
+    os.makedirs(log_dir, exist_ok=True)
+
+    fmt = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    # File handler (add once)
     if not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
         fh = logging.FileHandler(log_file)
         fh.setLevel(level)
-        fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        fh.setFormatter(fmt)
         logger.addHandler(fh)
-
+    # Console handler (add once)
     if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in logger.handlers):
         sh = logging.StreamHandler()
         sh.setLevel(level)
-        sh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        sh.setFormatter(fmt)
         logger.addHandler(sh)
 
+    logger.info(f"[config] Log file: {log_file}")
     return logger
 
 class PipelineManager:
@@ -177,17 +173,12 @@ class PipelineManager:
         return util_spectrum_path(self.config, self.current_night, tides_id, ensure_dir=True)
 
     def _logs_dir(self) -> str:
-        """Get the logs directory path using data_paths structure."""
-        data_paths = self.config.get("data_paths", {})
-        # Get base data directory (parent of spectra_dir, deliveries_dir, etc.)
-        spectra_dir = data_paths.get("spectra_dir", "/data/spectra")
-        base_data_dir = os.path.dirname(spectra_dir)  # /data
-        logs_dir = os.path.join(base_data_dir, "logs")
-        
-        # Include night directory if current_night is set
-        if self.current_night:
-            logs_dir = os.path.join(logs_dir, self.current_night)
-            
+        """
+        Logs/DONE flags directory for current night:
+        <spectra_dir>/<night>/logs
+        """
+        base = util_spectra_night_dir(self.config, self.current_night, ensure=True)
+        logs_dir = os.path.join(base, "logs")
         os.makedirs(logs_dir, exist_ok=True)
         return logs_dir
 
@@ -207,11 +198,8 @@ class PipelineManager:
         logs_dir = self._logs_dir()
         module_done_file = os.path.join(logs_dir, f"{module_name}_DONE.txt")
         if os.path.exists(module_done_file):
-            try:
-                with open(module_done_file, 'r') as f:
-                    return f.read().strip().upper().startswith("TRUE")
-            except Exception:
-                return False
+            with open(module_done_file, 'r') as f:
+                return f.read().strip().upper().startswith("TRUE")
         return False
 
     async def _run_classifiers_api(self, obj_names: list[str | int], logger: logging.Logger, snid_params: dict | None = None, ngsf_params: dict | None = None):
