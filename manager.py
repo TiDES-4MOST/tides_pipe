@@ -13,6 +13,7 @@ import asyncio
 import time
 
 from tides_pipe.modules.classifiers.snid_handler import SnidHandler
+from tides_pipe.modules.classifiers.snid_defaults import snid_params_from_config
 from tides_pipe.utils.paths import spectra_night_dir as util_spectra_night_dir, spectrum_path as util_spectrum_path
 
 # Optional DB/status helpers (don’t break if missing)
@@ -347,47 +348,7 @@ class PipelineManager:
 
     # Defaults aligned with your Django SnidParamsForm
     def _snid_default_params(self) -> dict:
-        cfg = (self.config.get("snid") or {}).get("defaults", {})
-        def g(key, default):
-            return cfg.get(key, default)
-
-        def as_list(v, default=None):
-            if v is None:
-                return default if default is not None else []
-            if isinstance(v, (list, tuple, set)):
-                return list(v)
-            if isinstance(v, str):
-                return [s.strip() for s in v.split(",") if s.strip()]
-            return [v]
-
-        # Requested default usesub list
-        default_usesub = [
-            "Ia-norm", "Ic-norm", "Ib-norm", "Ia-91T", "Ia-91bg", "Gal",
-            "IIn", "Ia-pec", "Ia-csm", "IIP", "LBV", "Ib-pec",
-            "Ic-broad", "II-pec", "IIb", "IIL", "M-star", "AGN",
-        ]
-
-        # Normalize lists
-        use = as_list(g("use", ["Ia", "Ib", "Ic", "II", "NotSN"]), default=["Ia", "Ib", "Ic", "II", "NotSN"])
-        avoid = as_list(g("avoid", []), default=[])
-        avoids_sub = as_list(g("avoidsub", []), default=[])
-        uses_sub = as_list(g("usesub", default_usesub), default=default_usesub)
-
-        return {
-            "wmin": float(g("wmin", 4000.0)),
-            "wmax": float(g("wmax", 9000.0)),
-            "zmin": float(g("zmin", 0.1)),
-            "zmax": float(g("zmax", 1.2)),
-            "emclip": g("emclip", None),
-            "emwid": int(g("emwid", 40)),
-            "agemin": int(g("agemin", -90)),
-            "agemax": int(g("agemax", 1000)),
-            "aband": bool(g("aband", False)),
-            "use": use,
-            "avoid": avoid,
-            "avoidsub": avoids_sub,
-            "usesub": uses_sub,
-        }
+        return snid_params_from_config(self.config)
 
     def _run_snid_classification(self, night: str, obj_names: list, logger) -> list[dict]:
         results = []
