@@ -131,6 +131,7 @@ class SnidHandler:
             "agemax": int(g("agemax", 1000)),
             "aband": bool(g("aband", False)),
             "use": use,
+            "avoid": []
         }
 
     def classify(
