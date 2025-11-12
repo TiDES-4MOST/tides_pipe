@@ -36,6 +36,12 @@ def _infer_from_path(spectrum_path: str) -> Tuple[Optional[str], Optional[str]]:
     except Exception:
         return None, None
 
+def _pretty_json(obj: dict) -> str:
+    try:
+        return json.dumps(obj, indent=2, sort_keys=True, ensure_ascii=False)
+    except Exception:
+        return str(obj)
+
 class SnidHandler:
     def __init__(self, config: Optional[dict] = None):
         self.config = config or {}
@@ -48,12 +54,22 @@ class SnidHandler:
 
     def _post_job(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         url = f"{SNID_API_URL}/{SNID_API_ENDPOINT}"
-        with httpx.Client(timeout=120) as cx:
-            r = cx.post(url, json=payload)
-            r.raise_for_status()
-            if r.headers.get("content-type", "").startswith("application/json"):
-                return r.json()
-            return {"status": "ok"}
+        # Log the full payload we are sending
+        self.log.info(f"[snid] POST {url} with payload:\n{_pretty_json(payload)}")
+        try:
+            with httpx.Client(timeout=120) as cx:
+                r = cx.post(url, json=payload)
+                r.raise_for_status()
+                if r.headers.get("content-type", "").startswith("application/json"):
+                    return r.json()
+                return {"status": "ok"}
+        except httpx.HTTPStatusError as e:
+            body = e.response.text if e.response is not None else ""
+            self.log.error(
+                f"[snid] API error {e.response.status_code if e.response else ''} at {url}\n"
+                f"Response body:\n{body}"
+            )
+            raise
 
     def _wait_for_hdf5(self, out_dir: str, timeout_s: int) -> Optional[str]:
         start = time.time()
@@ -137,6 +153,14 @@ class SnidHandler:
         payload = {"spectrum": spectrum_path, "output_dir": out_dir}
         params = snid_params or self._default_params()
         payload.update({k: v for k, v in params.items() if v is not None})
+
+        # Also log a preflight check for clarity
+        self.log.info(
+            "[snid] Preflight: "
+            f"spectrum_exists={os.path.exists(spectrum_path)} "
+            f"out_dir_exists={os.path.isdir(out_dir)} "
+            f"out_dir_writable={os.access(out_dir, os.W_OK)}"
+        )
 
         api_resp = self._post_job(payload)
         self.log.info(f"[snid] API response: {api_resp}")
