@@ -72,6 +72,23 @@ def _chgrp_if_requested(path: str, logger):
     except Exception as e:
         logger.warning(f"[snid] chgrp failed for {path}: {e}")
 
+def _mkdir_777(path: str, logger):
+    # Make directory with mode 777, ignoring process umask
+    old_umask = os.umask(0)
+    try:
+        os.makedirs(path, mode=0o777, exist_ok=True)
+    finally:
+        os.umask(old_umask)
+    try:
+        os.chmod(path, 0o777)  # in case it already existed
+    except Exception as e:
+        logger.warning(f"[snid] chmod 777 failed for {path}: {e}")
+    try:
+        st = os.stat(path)
+        logger.info(f"[snid] dir perms {path} mode={oct(stat.S_IMODE(st.st_mode))} uid:gid={st.st_uid}:{st.st_gid}")
+    except Exception:
+        pass
+
 class SnidHandler:
     def __init__(self, config: Optional[dict] = None):
         self.config = config or {}
@@ -80,21 +97,16 @@ class SnidHandler:
     def _target_dir(self, night: str, tides_id: Union[str, int]) -> str:
         root = SNID_API_OUT_ROOT
         night_dir = os.path.join(root, str(night))
-        d = os.path.join(night_dir, str(tides_id))
+        obj_dir = os.path.join(night_dir, str(tides_id))
+        target_dir = os.path.join(obj_dir, "target")  # some APIs copy inputs here
 
-        # Create each level and chmod 777 (best-effort)
-        for path in (root, night_dir, d):
+        for path in (root, night_dir, obj_dir, target_dir):
             try:
-                os.makedirs(path, mode=0o777, exist_ok=True)
+                _mkdir_777(path, self.log)
             except PermissionError as e:
-                self.log.error(f"[snid] mkdir failed: {path}: {e}")
+                self._log_perm_issue(path, e)
                 raise
-            try:
-                os.chmod(path, 0o777)
-            except Exception as e:
-                self.log.warning(f"[snid] chmod 777 failed for {path}: {e}")
-
-        return d
+        return obj_dir
 
     def _post_job(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         url = f"{SNID_API_URL}/{SNID_API_ENDPOINT}"
