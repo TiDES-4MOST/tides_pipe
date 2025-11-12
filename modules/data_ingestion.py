@@ -97,13 +97,6 @@ class DataIngestion(Module):
             self.logger.info(f"No new files found for night {night}.")
             return []
 
-        # Remove any direct calls like:
-        # os.makedirs(spectra_night_dir)
-        # and use `out_dir` everywhere (for spectra and thumbnails).
-        # Example when writing a spectrum:
-        # spath = spectrum_path(config, night, tides_id, ensure_dir=True)
-        # with open(spath, "w") as f: ...
-
         # Write "FALSE" to DONE.txt at the start
         signal_file = os.path.join(spectra_night_dir, "DONE.txt")
         with open(signal_file, 'w') as f:
@@ -111,11 +104,12 @@ class DataIngestion(Module):
 
         obj_names = []
         limit = self._ingestion_limit()
-        files_iter = islice(discovered_files, limit) if limit else discovered_files
-        # Build absolute file paths and apply optional test limit
-        discovered_files = [os.path.join(night_dir, f) for f in sorted(files)]
-        files_iter = islice(discovered_files, limit) if limit else discovered_files
-        for file_path in files_iter:
+        files = sorted(files)
+        if limit:
+            self.logger.info(f"[data_ingestion] test=True; limiting to first {limit} files")
+            files = files[:limit]
+        discovered_files = [os.path.join(night_dir, f) for f in files]
+        for file_path in discovered_files:
             self.logger.info(f"Processing file: {file_path}")
             try:
                 obj_names.extend(self.process_file(file_path, spectra_night_dir))
