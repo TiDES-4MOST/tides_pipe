@@ -350,10 +350,21 @@ class PipelineManager:
     def _snid_default_params(self) -> dict:
         return snid_params_from_config(self.config)
 
+    def _limit_for_test(self, obj_names: list[str], logger):
+        cfg = (self.config.get("classification") or {})
+        if not cfg.get("test"):
+            return obj_names
+        limit = int(cfg.get("max", 5))
+        if limit and len(obj_names) > limit:
+            logger.info(f"[classification_api] test=True; limiting to first {limit} of {len(obj_names)} objects")
+            return obj_names[:limit]
+        return obj_names
+
     def _run_snid_classification(self, night: str, obj_names: list, logger) -> list[dict]:
-        results = []
+        obj_names = self._limit_for_test([str(x) for x in obj_names], logger)
         params = self._snid_default_params()
-        for obj_id in (obj_names or []):
+        results = []
+        for obj_id in obj_names:
             spath = util_spectrum_path(self.config, night, obj_id, ensure_dir=True)
             try:
                 logger.info(f"[classification_api] SNID classify obj={obj_id} path={spath}")

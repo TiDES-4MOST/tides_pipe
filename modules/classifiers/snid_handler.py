@@ -43,14 +43,69 @@ def _pretty_json(obj: dict) -> str:
     except Exception:
         return str(obj)
 
+import stat
+# Optional: group resolution if you want to set a specific group via env
+try:
+    import grp
+except Exception:
+    grp = None
+
+def _chmod_2770(path: str, logger):
+    try:
+        os.chmod(path, 0o2770)  # rwx for user+group, setgid bit
+    except Exception as e:
+        logger.warning(f"[snid] chmod 2770 failed for {path}: {e}")
+
+def _chgrp_if_requested(path: str, logger):
+    """
+    Optionally set group to SNID_API_GID or SNID_API_GROUP if provided.
+    Safe no-op otherwise.
+    """
+    gid_env = os.getenv("SNID_API_GID")
+    grp_env = os.getenv("SNID_API_GROUP")
+    if not gid_env and not grp_env:
+        return
+    try:
+        gid = int(gid_env) if gid_env else (grp.getgrnam(grp_env).gr_gid if grp else None)
+        if gid is not None:
+            os.chown(path, -1, gid)
+    except Exception as e:
+        logger.warning(f"[snid] chgrp failed for {path}: {e}")
+
 class SnidHandler:
     def __init__(self, config: Optional[dict] = None):
         self.config = config or {}
         self.log = log
 
     def _target_dir(self, night: str, tides_id: Union[str, int]) -> str:
-        d = os.path.join(SNID_API_OUT_ROOT, str(night), str(tides_id))
-        os.makedirs(d, exist_ok=True)
+        root = SNID_API_OUT_ROOT
+        # Ensure root exists and set perms
+        try:
+            os.makedirs(root, exist_ok=True)
+            _chmod_2770(root, self.log)
+            _chgrp_if_requested(root, self.log)
+        except PermissionError as e:
+            self._log_perm_issue(root, e)
+            raise
+
+        night_dir = os.path.join(root, str(night))
+        try:
+            os.makedirs(night_dir, exist_ok=True)
+            _chmod_2770(night_dir, self.log)
+            _chgrp_if_requested(night_dir, self.log)
+        except PermissionError as e:
+            self._log_perm_issue(night_dir, e)
+            raise
+
+        d = os.path.join(night_dir, str(tides_id))
+        try:
+            os.makedirs(d, exist_ok=True)
+            _chmod_2770(d, self.log)
+            _chgrp_if_requested(d, self.log)
+        except PermissionError as e:
+            self._log_perm_issue(d, e)
+            raise
+
         return d
 
     def _post_job(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -115,9 +170,6 @@ class SnidHandler:
             self.log.warning(f"Failed to parse HDF5 {h5_path}: {e}")
         return out
 
-    def _default_params(self) -> Dict[str, Any]:
-        return snid_params_from_config(self.config)
-
     def classify(
         self,
         spectrum_path: str,
@@ -135,8 +187,14 @@ class SnidHandler:
         out_dir = self._target_dir(str(night), str(tides_id))
         self.log.info(f"[snid] out_dir={out_dir}")
 
+        # Prefer params provided by manager; fall back to config defaults only if missing
+        if snid_params is None:
+            self.log.info("[snid] No params provided by caller; using defaults from config")
+            params = snid_params_from_config(self.config)
+        else:
+            params = snid_params
+
         payload = {"spectrum": spectrum_path, "output_dir": out_dir}
-        params = snid_params or self._default_params()
         payload.update({k: v for k, v in params.items() if v is not None})
 
         # Also log a preflight check for clarity
