@@ -117,9 +117,21 @@ class SnidHandler:
     def _default_params(self) -> Dict[str, Any]:
         cfg = (self.config.get("snid") or {}).get("defaults", {})
         def g(k, d): return cfg.get(k, d)
-        use = g("use", ["Ia", "Ib", "Ic", "II", "NotSN"])
-        if isinstance(use, str):
-            use = [s.strip() for s in use.split(",") if s.strip()]
+
+        def _as_list(v):
+            if v is None:
+                return []
+            if isinstance(v, (list, tuple, set)):
+                return list(v)
+            if isinstance(v, str):
+                return [s.strip() for s in v.split(",") if s.strip()]
+            return [v]
+
+        use = _as_list(g("use", ["Ia", "Ib", "Ic", "II", "NotSN"]))
+        avoid = _as_list(g("avoid", []))
+        avoidsub = _as_list(g("avoidsub", []))
+        usesub = _as_list(g("usesub", []))
+
         return {
             "wmin": float(g("wmin", 4000.0)),
             "wmax": float(g("wmax", 9000.0)),
@@ -131,7 +143,9 @@ class SnidHandler:
             "agemax": int(g("agemax", 1000)),
             "aband": bool(g("aband", False)),
             "use": use,
-            "avoid": []
+            "avoid": avoid,
+            "avoidsub": avoidsub,
+            "usesub": usesub,
         }
 
     def classify(

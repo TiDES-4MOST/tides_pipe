@@ -45,3 +45,5 @@ snid:
       - II
       - NotSN
     avoid: []
+    avoidsub: []
+    usesub: []
