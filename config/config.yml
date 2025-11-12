@@ -44,3 +44,4 @@ snid:
       - Ic
       - II
       - NotSN
+    avoid: []
