@@ -46,4 +46,22 @@ snid:
       - NotSN
     avoid: []
     avoidsub: []
-    usesub: []
+    usesub:
+      - "Ia-norm"
+      - "Ic-norm"
+      - "Ib-norm"
+      - "Ia-91T"
+      - "Ia-91bg"
+      - "Gal"
+      - "IIn"
+      - "Ia-pec"
+      - "Ia-csm"
+      - "IIP"
+      - "LBV"
+      - "Ib-pec"
+      - "Ic-broad"
+      - "II-pec"
+      - "IIb"
+      - "IIL"
+      - "M-star"
+      - "AGN"

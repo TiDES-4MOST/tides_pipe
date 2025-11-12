@@ -351,10 +351,27 @@ class PipelineManager:
         def g(key, default):
             return cfg.get(key, default)
 
-        # Normalize 'use' to a Python list
-        use = g("use", ["Ia", "Ib", "Ic", "II", "NotSN"])
-        if isinstance(use, str):
-            use = [s.strip() for s in use.split(",") if s.strip()]
+        def as_list(v, default=None):
+            if v is None:
+                return default if default is not None else []
+            if isinstance(v, (list, tuple, set)):
+                return list(v)
+            if isinstance(v, str):
+                return [s.strip() for s in v.split(",") if s.strip()]
+            return [v]
+
+        # Requested default usesub list
+        default_usesub = [
+            "Ia-norm", "Ic-norm", "Ib-norm", "Ia-91T", "Ia-91bg", "Gal",
+            "IIn", "Ia-pec", "Ia-csm", "IIP", "LBV", "Ib-pec",
+            "Ic-broad", "II-pec", "IIb", "IIL", "M-star", "AGN",
+        ]
+
+        # Normalize lists
+        use = as_list(g("use", ["Ia", "Ib", "Ic", "II", "NotSN"]), default=["Ia", "Ib", "Ic", "II", "NotSN"])
+        avoid = as_list(g("avoid", []), default=[])
+        avoids_sub = as_list(g("avoidsub", []), default=[])
+        uses_sub = as_list(g("usesub", default_usesub), default=default_usesub)
 
         return {
             "wmin": float(g("wmin", 4000.0)),
@@ -367,6 +384,9 @@ class PipelineManager:
             "agemax": int(g("agemax", 1000)),
             "aband": bool(g("aband", False)),
             "use": use,
+            "avoid": avoid,
+            "avoidsub": avoids_sub,
+            "usesub": uses_sub,
         }
 
     def _run_snid_classification(self, night: str, obj_names: list, logger) -> list[dict]:
