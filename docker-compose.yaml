@@ -33,7 +33,7 @@ services:
       - qxp_api
     #networks:
     #  - backend
-    user: "1000:1000"
+    # user: "1000:1000"
 
   watcher:
     build:
