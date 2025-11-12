@@ -5,7 +5,7 @@ modules:
 
 data_ingestion:
   test: true  # Enable test mode for data ingestion
-  
+  max: 5
 classification:
   test: true
   max: 5
