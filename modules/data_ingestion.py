@@ -15,7 +15,7 @@ from itertools import islice
 
 class DataIngestion(Module):
     def __init__(self, config):
-        self.config = config
+        self.config = config or {}
 
     @staticmethod
     def _json_default(o):
@@ -56,12 +56,12 @@ class DataIngestion(Module):
             # try float-like (e.g. 1.23e+06)
             return int(float(s))
 
-    def _ingestion_limit(self, cfg: dict | None) -> int:
+    def _ingestion_limit(self, cfg=None) -> int:
         """
-        If test mode enabled, return max files to process.
+        If test mode is enabled, return the max number of spectra to process.
         Priority: data_ingestion.max -> classification.max -> 5.
         """
-        cfg = cfg or {}
+        cfg = cfg or getattr(self, "config", {}) or {}
         di = (cfg.get("data_ingestion") or {})
         if not di.get("test"):
             return 0
@@ -108,8 +108,9 @@ class DataIngestion(Module):
 
         obj_names = []
         limit = self._ingestion_limit()
-        for file in files:
-            file_path = os.path.join(night_dir, file)
+        files_iter = islice(discovered_files, limit) if limit else discovered_files
+        for file_path in files_iter:
+            # ...existing
             self.logger.info(f"Processing file: {file}")
             try:
                 obj_names.extend(self.process_file(file_path, spectra_night_dir))
