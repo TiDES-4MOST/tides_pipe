@@ -82,17 +82,17 @@ class SnidHandler:
         night_dir = os.path.join(root, str(night))
         d = os.path.join(night_dir, str(tides_id))
 
-        # Create each level and chmod 775 (best-effort)
+        # Create each level and chmod 776 (best-effort)
         for path in (root, night_dir, d):
             try:
-                os.makedirs(path, mode=0o775, exist_ok=True)
+                os.makedirs(path, mode=0o776, exist_ok=True)
             except PermissionError as e:
                 self.log.error(f"[snid] mkdir failed: {path}: {e}")
                 raise
             try:
-                os.chmod(path, 0o775)
+                os.chmod(path, 0o776)
             except Exception as e:
-                self.log.warning(f"[snid] chmod 775 failed for {path}: {e}")
+                self.log.warning(f"[snid] chmod 776 failed for {path}: {e}")
 
         return d
 
