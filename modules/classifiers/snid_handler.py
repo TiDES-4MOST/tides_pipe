@@ -79,32 +79,20 @@ class SnidHandler:
 
     def _target_dir(self, night: str, tides_id: Union[str, int]) -> str:
         root = SNID_API_OUT_ROOT
-        # Ensure root exists and set perms
-        try:
-            os.makedirs(root, exist_ok=True)
-            _chmod_2770(root, self.log)
-            _chgrp_if_requested(root, self.log)
-        except PermissionError as e:
-            self._log_perm_issue(root, e)
-            raise
-
         night_dir = os.path.join(root, str(night))
-        try:
-            os.makedirs(night_dir, exist_ok=True)
-            _chmod_2770(night_dir, self.log)
-            _chgrp_if_requested(night_dir, self.log)
-        except PermissionError as e:
-            self._log_perm_issue(night_dir, e)
-            raise
-
         d = os.path.join(night_dir, str(tides_id))
-        try:
-            os.makedirs(d, exist_ok=True)
-            _chmod_2770(d, self.log)
-            _chgrp_if_requested(d, self.log)
-        except PermissionError as e:
-            self._log_perm_issue(d, e)
-            raise
+
+        # Create each level and chmod 775 (best-effort)
+        for path in (root, night_dir, d):
+            try:
+                os.makedirs(path, mode=0o775, exist_ok=True)
+            except PermissionError as e:
+                self.log.error(f"[snid] mkdir failed: {path}: {e}")
+                raise
+            try:
+                os.chmod(path, 0o775)
+            except Exception as e:
+                self.log.warning(f"[snid] chmod 775 failed for {path}: {e}")
 
         return d
 

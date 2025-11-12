@@ -55,6 +55,27 @@ class DataIngestion(Module):
             # try float-like (e.g. 1.23e+06)
             return int(float(s))
 
+    def _ingestion_limit(self) -> int:
+        """
+        When test mode is enabled, return the max number of spectra to process.
+        Priority: data_ingestion.max -> classification.max -> 5.
+        """
+        cfg = getattr(self, "config", {}) or {}
+        di = (cfg.get("data_ingestion") or {})
+        if not di.get("test"):
+            return 0
+        # data_ingestion.max
+        try:
+            if "max" in di:
+                return int(di["max"])
+        except Exception:
+            pass
+        # classification.max
+        try:
+            return int((cfg.get("classification") or {}).get("max", 5))
+        except Exception:
+            return 5
+
     def process_night(self, night):
         # Use paths from environment variables (for containers) or fall back to config file (for local development)
         self.logger.info(f"Starting data ingestion for night: {night}")
@@ -92,6 +113,7 @@ class DataIngestion(Module):
             f.write("FALSE\n")
 
         obj_names = []
+        limit = self._ingestion_limit()
         for file in files:
             file_path = os.path.join(night_dir, file)
             self.logger.info(f"Processing file: {file}")
