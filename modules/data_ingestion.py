@@ -85,6 +85,9 @@ class DataIngestion(Module):
         archive_night_dir = os.path.join(archive_dir, night)
         self.logger.info(f"Archives will be saved in archive directory: {archive_night_dir}")
 
+        # Ensure output dir exists before writing any files or DONE flags
+        os.makedirs(spectra_night_dir, exist_ok=True)
+        
         if not os.path.exists(night_dir):
             self.logger.info(f"No data found for night {night} in {night_dir}")
             return []
@@ -109,13 +112,15 @@ class DataIngestion(Module):
         obj_names = []
         limit = self._ingestion_limit()
         files_iter = islice(discovered_files, limit) if limit else discovered_files
+        # Build absolute file paths and apply optional test limit
+        discovered_files = [os.path.join(night_dir, f) for f in sorted(files)]
+        files_iter = islice(discovered_files, limit) if limit else discovered_files
         for file_path in files_iter:
-            # ...existing
-            self.logger.info(f"Processing file: {file}")
+            self.logger.info(f"Processing file: {file_path}")
             try:
                 obj_names.extend(self.process_file(file_path, spectra_night_dir))
             except Exception as e:
-                self.logger.error(f"Error processing {file}: {e}")
+                self.logger.error(f"Error processing {file_path}: {e}")
 
         #self.archive_files(night_dir, archive_night_dir) #TODO make this safe before enabling
         self.set_done(True, night)
