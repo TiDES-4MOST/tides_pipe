@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import random
 import hashlib
 from tides_pipe.utils.paths import spectra_night_dir as get_spectra_night_dir, spectrum_path
+from itertools import islice
 
 class DataIngestion(Module):
     def __init__(self, config):
@@ -55,24 +56,17 @@ class DataIngestion(Module):
             # try float-like (e.g. 1.23e+06)
             return int(float(s))
 
-    def _ingestion_limit(self) -> int:
+    def _ingestion_limit(self, cfg: dict | None) -> int:
         """
-        When test mode is enabled, return the max number of spectra to process.
+        If test mode enabled, return max files to process.
         Priority: data_ingestion.max -> classification.max -> 5.
         """
-        cfg = getattr(self, "config", {}) or {}
+        cfg = cfg or {}
         di = (cfg.get("data_ingestion") or {})
         if not di.get("test"):
             return 0
-        # data_ingestion.max
         try:
-            if "max" in di:
-                return int(di["max"])
-        except Exception:
-            pass
-        # classification.max
-        try:
-            return int((cfg.get("classification") or {}).get("max", 5))
+            return int(di.get("max", (cfg.get("classification") or {}).get("max", 5)))
         except Exception:
             return 5
 
