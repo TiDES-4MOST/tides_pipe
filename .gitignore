@@ -4,3 +4,9 @@ __pycache__/
 .env
 config/*.local.yml
 *.eggs*
+
+# Data directories (can contain large files)
+deliveries/
+spectra/
+static/
+tides_env/

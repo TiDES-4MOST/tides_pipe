@@ -1,4 +1,3 @@
-version: "3.9"
 services:
   pipeline:
     build:
@@ -8,7 +7,6 @@ services:
       TIDES_CONFIG: /app/tides_pipe/config/config.yml
       DELIVERIES_DIR: /data/deliveries
       SPECTRA_DIR: /data/spectra
-      STATIC_PLOTS_DIR: /data/static/plots
       # remote DB creds provided at runtime (compose .env or CI secrets)
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT:-5432}
@@ -16,12 +14,13 @@ services:
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
       DB_SSLMODE: ${DB_SSLMODE:-prefer}
-      CLASSIFIER_SNID_URL: ${CLASSIFIER_SNID_URL:-http://snid_api:8000}
-      CLASSIFIER_NGSF_URL: ${CLASSIFIER_NGSF_URL:-http://ngsf_api:8000}
+      SNID_API_URL: http://192.168.10.117:8000
+      NGSF_API_URL: http://192.168.10.117:8001
     volumes:
-      - /mnt/data/deliveries:/data/deliveries
-      - /mnt/data/spectra:/data/spectra
-      #- static_volume_1:/data/static
+      - /mnt/data/deliveries:/data/deliveries:rw
+      - /mnt/data/spectra:/data/spectra:rw
+      - /mnt/api_results/snid_api_runs:/snid_api_runs:rw
+      - /mnt/api_results/ngsf_api_runs:/ngsf_api_runs:rw
       - ./config/config.yml:/app/tides_pipe/config/config.yml:ro
     ports:
       - "8001:8001"  # uvicorn port for ingest_api
@@ -34,31 +33,23 @@ services:
       - qxp_api
     #networks:
     #  - backend
+    # user: "1000:1000"
 
   watcher:
     build:
       context: .
       dockerfile: ./Dockerfile.watcher
+    command: ["python", "-u", "/app/watcher.py"]
     environment:
       DELIVERIES_DIR: /data/deliveries
       PIPELINE_API: http://pipeline:8001
+      PYTHONUNBUFFERED: "1"
+      LOG_LEVEL: INFO
+      WATCHER_POLLING: "1"   # enable if /mnt/data is NFS/CIFS/remote
     volumes:
-      - /mnt/data/deliveries/data/deliveries
+      - /mnt/data/deliveries:/data/deliveries:rw
     depends_on:
       - pipeline
-
-#  snid_api:
-#    build: ./modules/classifiers/snid_docker/
-#    expose: ["8000"]
-#    volumes:
-#      - ./spectra:/data/spectra:ro
-
-#  ngsf_api:
-#    build: ./modules/classifiers/ngsf_docker/
-#    expose: ["8000"]
-#    working_dir: /data/spectra
-#    volumes:
-#      - ./spectra:/data/spectra:ro
 
   qxp_api:
     build: ./modules/classifiers/qxp/

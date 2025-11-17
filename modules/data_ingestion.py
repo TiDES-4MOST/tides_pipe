@@ -10,10 +10,12 @@ import json
 import matplotlib.pyplot as plt
 import random
 import hashlib
+from tides_pipe.utils.paths import spectra_night_dir as get_spectra_night_dir, spectrum_path
+from itertools import islice
 
 class DataIngestion(Module):
     def __init__(self, config):
-        self.config = config
+        self.config = config or {}
 
     @staticmethod
     def _json_default(o):
@@ -54,12 +56,28 @@ class DataIngestion(Module):
             # try float-like (e.g. 1.23e+06)
             return int(float(s))
 
+    def _ingestion_limit(self, cfg=None) -> int:
+        """
+        If test mode is enabled, return the max number of spectra to process.
+        Priority: data_ingestion.max -> classification.max -> 5.
+        """
+        cfg = cfg or getattr(self, "config", {}) or {}
+        di = (cfg.get("data_ingestion") or {})
+        if not di.get("test"):
+            return 0
+        try:
+            return int(di.get("max", (cfg.get("classification") or {}).get("max", 5)))
+        except Exception:
+            return 5
+
     def process_night(self, night):
-        # Use paths from the config file
+        # Use paths from environment variables (for containers) or fall back to config file (for local development)
         self.logger.info(f"Starting data ingestion for night: {night}")
-        deliveries_dir = self.config['data_paths']['deliveries_dir']
-        spectra_dir = self.config['data_paths']['spectra_dir']
-        archive_dir = self.config['data_paths']['archive_dir']
+        deliveries_dir = os.getenv('DELIVERIES_DIR') or self.config['data_paths']['deliveries_dir']
+        spectra_dir = os.getenv('SPECTRA_DIR') or self.config['data_paths']['spectra_dir']
+        archive_dir = self.config['data_paths']['archive_dir']  # Keep from config as no container env var needed
+        self.logger.info(f"Using deliveries_dir: {deliveries_dir}")
+        self.logger.info(f"Using spectra_dir: {spectra_dir}")
         night_dir = os.path.join(deliveries_dir, night)
         self.logger.info(f"Looking for deliveries in nightly deliveries directory: {night_dir}")
         spectra_night_dir = os.path.join(spectra_dir, night)
@@ -67,17 +85,17 @@ class DataIngestion(Module):
         archive_night_dir = os.path.join(archive_dir, night)
         self.logger.info(f"Archives will be saved in archive directory: {archive_night_dir}")
 
+        # Ensure output dir exists before writing any files or DONE flags
+        os.makedirs(spectra_night_dir, exist_ok=True)
+        
         if not os.path.exists(night_dir):
-            self.logger.info(f"No data found for night {night} in ")
-            return
+            self.logger.info(f"No data found for night {night} in {night_dir}")
+            return []
 
         files = [f for f in os.listdir(night_dir) if f.endswith(".fits")]
         if not files:
             self.logger.info(f"No new files found for night {night}.")
-            return
-
-        if not os.path.exists(spectra_night_dir):
-            os.makedirs(spectra_night_dir)
+            return []
 
         # Write "FALSE" to DONE.txt at the start
         signal_file = os.path.join(spectra_night_dir, "DONE.txt")
@@ -85,16 +103,21 @@ class DataIngestion(Module):
             f.write("FALSE\n")
 
         obj_names = []
-        for file in files:
-            file_path = os.path.join(night_dir, file)
-            self.logger.info(f"Processing file: {file}")
+        limit = self._ingestion_limit()
+        files = sorted(files)
+        if limit:
+            self.logger.info(f"[data_ingestion] test=True; limiting to first {limit} files")
+            files = files[:limit]
+        discovered_files = [os.path.join(night_dir, f) for f in files]
+        for file_path in discovered_files:
+            self.logger.info(f"Processing file: {file_path}")
             try:
                 obj_names.extend(self.process_file(file_path, spectra_night_dir))
             except Exception as e:
-                self.logger.error(f"Error processing {file}: {e}")
+                self.logger.error(f"Error processing {file_path}: {e}")
 
         #self.archive_files(night_dir, archive_night_dir) #TODO make this safe before enabling
-        self.set_done(True)
+        self.set_done(True, night)
         return obj_names
 
     def process_file(self, file_path, spectra_night_dir):
@@ -123,14 +146,17 @@ class DataIngestion(Module):
 
             # Preload valid tides_ids from tides_cand to ensure OBJ_NME matches
             valid_ids = set()
-            tides_db_conn = self.connect_to_db("tides_db")
+            tides_db_conn = self.connect_to_db()
             if not tides_db_conn:
-                self.logger.error("Failed to connect to tides_db to validate tides_id")
+                self.logger.error("Failed to connect to database to validate tides_id")
                 return obj_names
+            
+            self.logger.info("Successfully connected to database")
             try:
                 cur = tides_db_conn.cursor()
                 cur.execute("SELECT tides_id FROM tides_cand")
                 valid_ids = {int(r[0]) for r in cur.fetchall()}
+                self.logger.info(f"Loaded {len(valid_ids)} valid tides_ids from tides_cand table")
             except Exception as e:
                 self.logger.error(f"Could not fetch tides_cand ids: {e}")
             finally:
@@ -229,11 +255,12 @@ class DataIngestion(Module):
         """
         Add or update tides_spec for the given object, including the thumbnail filepath in the additional_info JSON field.
         """
-        tides_db_conn = self.connect_to_db("tides_db")
+        tides_db_conn = self.connect_to_db()
         if not tides_db_conn:
-            self.logger.error("Failed to connect to tides_db for updating tides_spec")
+            self.logger.error("Failed to connect to database for updating tides_spec")
             return
 
+        self.logger.info("Successfully connected to database for tides_spec update")
         try:
             metadata['THUMBNAIL'] = thumbnail_file_path  # Local static path
 
@@ -259,8 +286,9 @@ class DataIngestion(Module):
                 metadata['VERSION'],
                 json.dumps(metadata, default=self._json_default)
             ))
+            rows_affected = cursor.rowcount
             tides_db_conn.commit()
-            self.logger.info(f"Updated tides_spec for object {obj_name}")
+            self.logger.info(f"Successfully inserted/updated {rows_affected} row(s) in tides_spec for object {obj_name} (qmost_id: {metadata['QMOST_ID']})")
         except Exception as e:
             self.logger.error(f"Failed to update tides_spec for object {obj_name}: {e}")
         finally:

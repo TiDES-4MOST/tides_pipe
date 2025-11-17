@@ -5,6 +5,7 @@ import importlib
 import pandas as pd
 import random
 from .module import Module
+from . import db
 
 
 
@@ -31,6 +32,20 @@ class Classifier(Module):
         return result
 
 def run(night=None, objects=None, logger=None, config=None):
+    # Handle None config gracefully
+    if config is None:
+        logger.error("Config is None - this suggests a config loading issue in the manager")
+        logger.info("Using minimal default configuration for classification")
+        config = {
+            "classification": {
+                "test": True,
+                "codes": []
+            },
+            "data_paths": {
+                "spectra_dir": "/data/spectra"
+            }
+        }
+    
     classification_config = config.get("classification", {})
     data_paths_config = config.get("data_paths", {})  # Load the data_paths block
     test_mode = classification_config.get("test", False)  # Read test mode from config
@@ -96,9 +111,16 @@ def run(night=None, objects=None, logger=None, config=None):
         return None
 
     # Save results to pipeline_classification_global table
-    tides_db_conn = Module.connect_to_db("tides_db")  # Use the inherited method
+    try:
+        # Load database credentials and connect using db.py
+        creds = db.load_creds(config)
+        tides_db_conn = db.connect(creds)
+    except Exception as e:
+        logger.error(f"Failed to connect to database for saving classifications: {e}")
+        return None
+
     if not tides_db_conn:
-        logger.error("Failed to connect to tides_db for saving classifications.")
+        logger.error("Failed to connect to database for saving classifications.")
         return None
 
     try:

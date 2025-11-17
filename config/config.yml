@@ -1,13 +1,18 @@
 modules:
   - data_ingestion
-  - classification
+  - classification_api
 
 
 data_ingestion:
   test: true  # Enable test mode for data ingestion
-  
+  max: 5
 classification:
-  test: true  # Enable test mode for classification
+  test: true
+  max: 5
+  enabled_classifiers:  # Which classifiers to run
+    - snid
+    #- ngsf
+    # - qxp  # Add qxp when available
   codes:
     - code: "snid"
       config_file: "/path/to/snid/config.yml"
@@ -19,7 +24,45 @@ db_creds:
   user: "pwise"
   password: ""
 data_paths:
-  deliveries_dir: "/Users/pwise/4MOST/tides/test_data/deliveries/"  # Example: Random night from the last week
-  archive_dir: "/Users/pwise/4MOST/tides/test_data/archive"
-  spectra_dir: "/Users/pwise/4MOST/tides/test_data/spectra/"  # Example: Random night from the last week
-  static_plots_dir: "/Users/pwise/4MOST/tides/tidestom/static/plots/"
+  deliveries_dir: "/data/deliveries"  # Container path for deliveries
+  archive_dir: "/data/archive"
+  spectra_dir: "/data/spectra"  # Container path for spectra
+  #static_plots_dir: "/data/static/plots"
+snid:
+  defaults:
+    wmin: 4000
+    wmax: 9000
+    zmin: 0.1
+    zmax: 1.2
+    emclip:
+    emwid: 40
+    agemin: -90
+    agemax: 1000
+    aband: false
+    use:
+      - Ia
+      - Ib
+      - Ic
+      - II
+      - NotSN
+    avoid: []
+    avoidsub: []
+    usesub:
+      - "Ia-norm"
+      - "Ic-norm"
+      - "Ib-norm"
+      - "Ia-91T"
+      - "Ia-91bg"
+      - "Gal"
+      - "IIn"
+      - "Ia-pec"
+      - "Ia-csm"
+      - "IIP"
+      - "LBV"
+      - "Ib-pec"
+      - "Ic-broad"
+      - "II-pec"
+      - "IIb"
+      - "IIL"
+      - "M-star"
+      - "AGN"
