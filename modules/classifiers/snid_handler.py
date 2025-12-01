@@ -14,6 +14,10 @@ except Exception:
 
 from tides_pipe.modules.classifiers.classification_store import save_result
 from tides_pipe.modules.classifiers.snid_defaults import snid_params_from_config
+try:
+    from tides_pipe.utils import dbutil  # same helper used by ingestion
+except Exception:
+    dbutil = None
 
 SNID_API_URL = (
     os.getenv("CLASSIFIER_SNID_URL")
@@ -93,6 +97,7 @@ class SnidHandler:
     def __init__(self, config: Optional[dict] = None):
         self.config = config or {}
         self.log = log
+        self._db_conn = None
 
     def _target_dir(self, night: str, tides_id: Union[str, int]) -> str:
         root = SNID_API_OUT_ROOT
@@ -170,6 +175,66 @@ class SnidHandler:
             self.log.warning(f"Failed to parse HDF5 {h5_path}: {e}")
         return out
 
+    def _db_connect(self):
+        if self._db_conn is not None:
+            return self._db_conn
+        if not dbutil:
+            self.log.warning("[snid] dbutil not available; results will not be saved to DB")
+            return None
+        try:
+            creds = dbutil.load_creds(self.config)
+            self._db_conn = dbutil.connect(creds)
+            return self._db_conn
+        except Exception as e:
+            self.log.warning(f"[snid] DB connect failed; results will not be saved to DB: {e}")
+            return None
+
+    def _save_result_db(self, tides_id: str, night: str, result: Dict[str, Any], api_resp: Dict[str, Any] | None):
+        conn = self._db_connect()
+        if not conn:
+            return
+        table = ((self.config.get("snid") or {}).get("db") or {}).get("table", "snid_results")
+        payload = {
+            "status": result.get("status"),
+            "verdict": result.get("verdict"),
+            "best_template": result.get("best_template"),
+            "redshift": result.get("redshift"),
+            "rlap": result.get("rlap"),
+            "sn": result.get("sn"),
+            "phase": result.get("phase"),
+            "result_file": result.get("result_file"),
+            "out_dir": result.get("out_dir"),
+            "api_resp": api_resp or {},
+        }
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    # Ensure table exists (lightweight safety)
+                    cur.execute(f"""
+                        CREATE TABLE IF NOT EXISTS {table} (
+                            tides_id      TEXT NOT NULL,
+                            night         TEXT NOT NULL,
+                            classifier    TEXT NOT NULL DEFAULT 'snid',
+                            payload       JSONB NOT NULL,
+                            created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                            updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                            PRIMARY KEY (tides_id, night, classifier)
+                        );
+                    """)
+                    # Upsert current payload
+                    cur.execute(
+                        f"""
+                        INSERT INTO {table} (tides_id, night, classifier, payload)
+                        VALUES (%s, %s, 'snid', %s)
+                        ON CONFLICT (tides_id, night, classifier)
+                        DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW();
+                        """,
+                        (str(tides_id), str(night), json.dumps(payload)),
+                    )
+            self.log.info(f"[snid] Saved result to DB table {table} for tides_id={tides_id}, night={night}")
+        except Exception as e:
+            self.log.warning(f"[snid] Failed to save result to DB: {e}")
+
     def classify(
         self,
         spectrum_path: str,
@@ -233,6 +298,12 @@ class SnidHandler:
                 self.log.warning(f"[snid] save_result failed: {e}")
         except Exception as e:
             self.log.warning(f"[snid] save_result failed: {e}")
+
+        # Also persist to DB (same pattern as ingestion)
+        try:
+            self._save_result_db(str(tides_id), str(night), result, api_resp)
+        except Exception as e:
+            self.log.warning(f"[snid] _save_result_db failed: {e}")
 
         try:
             with open(os.path.join(out_dir, "done.txt"), "w") as f:

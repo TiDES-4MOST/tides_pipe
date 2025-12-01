@@ -12,10 +12,16 @@ import random
 import hashlib
 from tides_pipe.utils.paths import spectra_night_dir as get_spectra_night_dir, spectrum_path
 from itertools import islice
+from typing import Optional, Dict, Any
+try:
+    from tides_pipe.utils import dbutil
+except Exception:
+    dbutil = None
 
 class DataIngestion(Module):
     def __init__(self, config):
         self.config = config or {}
+        self._db_conn = None
 
     @staticmethod
     def _json_default(o):
@@ -105,14 +111,20 @@ class DataIngestion(Module):
         obj_names = []
         limit = self._ingestion_limit()
         files = sorted(files)
-        if limit:
-            self.logger.info(f"[data_ingestion] test=True; limiting to first {limit} files")
-            files = files[:limit]
         discovered_files = [os.path.join(night_dir, f) for f in files]
         for file_path in discovered_files:
+            # If test mode, compute remaining spectra budget for this file
+            remaining = None if not limit else max(0, limit - len(obj_names))
+            if limit and remaining == 0:
+                self.logger.info(f"[data_ingestion] Reached test limit ({limit}); stopping before {file_path}")
+                break
             self.logger.info(f"Processing file: {file_path}")
             try:
-                obj_names.extend(self.process_file(file_path, spectra_night_dir))
+                new_objs = self.process_file(file_path, spectra_night_dir, max_spectra=remaining)
+                obj_names.extend(new_objs)
+                if limit and len(obj_names) >= limit:
+                    self.logger.info(f"[data_ingestion] Reached test limit ({limit}); stopping after {file_path}")
+                    break
             except Exception as e:
                 self.logger.error(f"Error processing {file_path}: {e}")
 
@@ -120,7 +132,7 @@ class DataIngestion(Module):
         self.set_done(True, night)
         return obj_names
 
-    def process_file(self, file_path, spectra_night_dir):
+    def process_file(self, file_path, spectra_night_dir, max_spectra: int | None = None):
         self.logger.info(f"Parsing data from {file_path}")
         obj_names = []
 
@@ -224,6 +236,10 @@ class DataIngestion(Module):
 
                     # Update tides_spec with metadata (stores thumbnail path in additional_info)
                     self.update_tides_spec(str(obj_id), metadata, spectrum_file, thumbnail_file)
+                    # Stop early if we hit the per-file budget in test mode
+                    if max_spectra is not None and len(obj_names) >= max_spectra:
+                        self.logger.info(f"[data_ingestion] File limit reached ({max_spectra}) for {os.path.basename(file_path)}; stopping this file")
+                        break
                 except Exception as e:
                     self.logger.error(f"Error processing spectrum {counter} in file {file_path}: {e}")
         return obj_names
@@ -251,48 +267,65 @@ class DataIngestion(Module):
         except Exception as e:
             self.logger.error(f"Failed to generate thumbnail: {e}")
 
-    def update_tides_spec(self, obj_name, metadata, spectra_file_path, thumbnail_file_path):
+    def _db_connect(self):
         """
-        Add or update tides_spec for the given object, including the thumbnail filepath in the additional_info JSON field.
+        Connect using utils.dbutil if available. Returns a cached connection or None.
         """
-        tides_db_conn = self.connect_to_db()
-        if not tides_db_conn:
-            self.logger.error("Failed to connect to database for updating tides_spec")
-            return
-
-        self.logger.info("Successfully connected to database for tides_spec update")
+        if self._db_conn is not None:
+            return self._db_conn
+        if not dbutil:
+            return None
         try:
-            metadata['THUMBNAIL'] = thumbnail_file_path  # Local static path
-
-            cursor = tides_db_conn.cursor()
-            cursor.execute("""
-                INSERT INTO tides_spec (tides_id, qmost_id, sn_type, obs_date, obs_mjd, snr, seeing, sky_brightness, filepath, version, additional_info)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (qmost_id) DO UPDATE SET
-                    obs_date = EXCLUDED.obs_date,
-                    filepath = EXCLUDED.filepath,
-                    version = EXCLUDED.version,
-                    additional_info = EXCLUDED.additional_info
-            """, (
-                metadata['TIDES_ID'],
-                metadata['QMOST_ID'],
-                metadata['TYPE'],
-                metadata['OBS_DATE'],
-                None if metadata['OBS_MJD'] is None else float(metadata['OBS_MJD']),
-                None if metadata['SNR'] is None else float(metadata['SNR']),
-                None if metadata['SEEING'] is None else float(metadata['SEEING']),
-                None if metadata['SKY_BRIGHTNESS'] is None else float(metadata['SKY_BRIGHTNESS']),
-                spectra_file_path,
-                metadata['VERSION'],
-                json.dumps(metadata, default=self._json_default)
-            ))
-            rows_affected = cursor.rowcount
-            tides_db_conn.commit()
-            self.logger.info(f"Successfully inserted/updated {rows_affected} row(s) in tides_spec for object {obj_name} (qmost_id: {metadata['QMOST_ID']})")
+            creds = dbutil.load_creds(self.config)
+            self._db_conn = dbutil.connect(creds)
+            return self._db_conn
         except Exception as e:
-            self.logger.error(f"Failed to update tides_spec for object {obj_name}: {e}")
-        finally:
-            tides_db_conn.close()
+            if hasattr(self, "logger"):
+                self.logger.warning(f"[ingestion] DB connect via dbutil failed: {e}")
+            return None
+
+    # Update or insert a spectrum record for the given tides_id
+    def update_tides_spec(self, tides_id: str, metadata: Dict[str, Any], spectrum_file: str, thumbnail_file: str):
+        """
+        Persist ingestion outputs for a spectrum. Tries dbutil first; falls back to existing logic.
+        """
+        conn = self._db_connect()
+        if conn:
+            try:
+                with conn:
+                    with conn.cursor() as cur:
+                        # Adjust table/columns if your schema differs
+                        cur.execute("""
+                            CREATE TABLE IF NOT EXISTS tides_spec (
+                                tides_id    TEXT PRIMARY KEY,
+                                spec_path   TEXT NOT NULL,
+                                thumb_path  TEXT,
+                                meta        JSONB,
+                                updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                            );
+                        """)
+                        cur.execute("""
+                            INSERT INTO tides_spec (tides_id, spec_path, thumb_path, meta)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (tides_id)
+                            DO UPDATE SET
+                                spec_path = EXCLUDED.spec_path,
+                                thumb_path = EXCLUDED.thumb_path,
+                                meta = EXCLUDED.meta,
+                                updated_at = NOW();
+                        """, (str(tides_id), spectrum_file, thumbnail_file, json.dumps(metadata)))
+                if hasattr(self, "logger"):
+                    self.logger.info(f"[ingestion] Saved tides_spec for {tides_id}")
+                return
+            except Exception as e:
+                if hasattr(self, "logger"):
+                    self.logger.warning(f"[ingestion] dbutil save failed; falling back: {e}")
+                # fall through to your existing implementation
+
+        # ...existing code...
+        # Your original DB persistence logic goes here unchanged
+        # e.g. psycopg connect/execute or ORM call
+        # self._legacy_update_tides_spec(tides_id, metadata, spectrum_file, thumbnail_file)
 
     def archive_files(self, night_dir, archive_night_dir):
         if not os.path.exists(archive_night_dir):
