@@ -245,9 +245,15 @@ class SnidHandler:
         conn = self._db_connect()
         if not conn:
             return
-        sn_type = result.get("verdict") or result.get("best_template")
+        try:
+            best = result.get('table')[0]
+        except Exception:
+            return
+
+        sn_type = best.get('typing')
+
         # rlap may be array / list / scalar
-        rlap = result.get("rlap")
+        rlap = best.get('rlap')
         if isinstance(rlap, (list, tuple)):
             rlap = rlap[0] if rlap else None
         try:
