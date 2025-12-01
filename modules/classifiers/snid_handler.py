@@ -235,6 +235,49 @@ class SnidHandler:
         except Exception as e:
             self.log.warning(f"[snid] Failed to save result to DB: {e}")
 
+    def _save_result_db_minimal(self, tides_id: str, night: str, result: Dict[str, Any]):
+        """
+        Minimal write into existing table:
+        pipeline_classification_snid(tides_id, sn_type, probability, version)
+        probability := rlap (float) or NULL
+        version := result.get('version') or params version or empty string
+        """
+        conn = self._db_connect()
+        if not conn:
+            return
+        sn_type = result.get("verdict") or result.get("best_template")
+        # rlap may be array / list / scalar
+        rlap = result.get("rlap")
+        if isinstance(rlap, (list, tuple)):
+            rlap = rlap[0] if rlap else None
+        try:
+            rlap = float(rlap) if rlap is not None else None
+        except Exception:
+            rlap = None
+
+        version = result.get("version")  # if future API provides it
+        if not version:
+            # Try config default
+            version = ((self.config.get("snid") or {}).get("defaults") or {}).get("version") or ""
+
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    # Try update first (since table PK is id, we have no unique constraint on tides_id)
+                    cur.execute("""
+                        UPDATE pipeline_classification_snid
+                        SET sn_type = %s, probability = %s, version = %s
+                        WHERE tides_id = %s
+                    """, (sn_type, rlap, version, int(tides_id)))
+                    if cur.rowcount == 0:
+                        cur.execute("""
+                            INSERT INTO pipeline_classification_snid (tides_id, sn_type, probability, version)
+                            VALUES (%s, %s, %s, %s)
+                        """, (int(tides_id), sn_type, rlap, version))
+            self.log.info(f"[snid] Upserted minimal classification (tides_id={tides_id}, sn_type={sn_type}, rlap={rlap}, version='{version}')")
+        except Exception as e:
+            self.log.warning(f"[snid] Minimal DB write failed: {e}")
+
     def classify(
         self,
         spectrum_path: str,
@@ -304,6 +347,10 @@ class SnidHandler:
             self._save_result_db(str(tides_id), str(night), result, api_resp)
         except Exception as e:
             self.log.warning(f"[snid] _save_result_db failed: {e}")
+        try:
+            self._save_result_db_minimal(str(tides_id), str(night), result)
+        except Exception as e:
+            self.log.warning(f"[snid] _save_result_db_minimal failed: {e}")
 
         try:
             with open(os.path.join(out_dir, "done.txt"), "w") as f:
