@@ -357,7 +357,7 @@ class SnidHandler:
         #except Exception as e:
         #    self.log.warning(f"[snid] _save_result_db failed: {e}")
         try:
-            self._save_result_db_minimal(str(tides_id), str(night), result)
+            self._save_result_db_minimal(str(tides_id), str(night), api_resp)
         except Exception as e:
             self.log.warning(f"[snid] _save_result_db_minimal failed: {e}")
 
