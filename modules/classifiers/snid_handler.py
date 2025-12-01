@@ -15,7 +15,7 @@ except Exception:
 from tides_pipe.modules.classifiers.classification_store import save_result
 from tides_pipe.modules.classifiers.snid_defaults import snid_params_from_config
 try:
-    from tides_pipe.utils import dbutil  # same helper used by ingestion
+    from tides_pipe.utils import db as dbutil  # provides load_creds/connect
 except Exception:
     dbutil = None
 
