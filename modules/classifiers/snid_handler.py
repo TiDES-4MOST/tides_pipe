@@ -246,8 +246,10 @@ class SnidHandler:
         if not conn:
             return
         try:
-            best = result.get('data', {}).get('table', [])[0]
-        except Exception:
+            data = result.get('data', {})
+            best = data.get('table', [])[0]
+        except Exception as e:
+            self.log.warning(f"[snid] Minimal DB write failed: {e}")
             return
 
         sn_type = best.get('typing')
