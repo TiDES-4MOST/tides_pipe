@@ -246,7 +246,7 @@ class SnidHandler:
         if not conn:
             return
         try:
-            best = result.get('table')[0]
+            best = result.get('data', {}).get('table', [])[0]
         except Exception:
             return
 
