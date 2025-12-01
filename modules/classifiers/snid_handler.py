@@ -242,6 +242,7 @@ class SnidHandler:
         probability := rlap (float) or NULL
         version := result.get('version') or params version or empty string
         """
+        self.log.info(f"[snid] _save_result_db_minimal for tides_id={tides_id}, result={result}")
         conn = self._db_connect()
         if not conn:
             return
