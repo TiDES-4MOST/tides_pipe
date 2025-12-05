@@ -263,9 +263,14 @@ class SnidHandler:
             rlap = float(rlap) if rlap is not None else None
         except Exception:
             rlap = None
-        z = best.get('redshift', None)
+        z = best.get('z', None)
         try:
             z = float(z) if z is not None else None
+        except Exception:
+            z = None
+        zerr = best.get('zerr', None)
+        try:
+            zerr = float(zerr) if zerr is not None else None
         except Exception:
             z = None
         phase = best.get('age', None)
@@ -284,23 +289,23 @@ class SnidHandler:
                     # Try update first (since table PK is id, we have no unique constraint on tides_id)
                     cur.execute("""
                         UPDATE pipeline_classification_snid
-                        SET sn_type = %s, probability = %s, version = %s, z = %s, phase = %s
+                        SET sn_type = %s, probability = %s, version = %s, z = %s, zerr = %s, phase = %s
                         WHERE tides_id = %s
-                    """, (sn_type, rlap, version, z, phase, int(tides_id)))
+                    """, (sn_type, rlap, version, z, zerr, phase, int(tides_id)))
                     cur.execute("""
                         UPDATE pipeline_classification_global
-                        SET sn_type = %s, probability = %s, version = %s, z = %s, phase = %s
+                        SET sn_type = %s, probability = %s, version = %s, z = %s, zerr = %s, phase = %s
                         WHERE tides_id = %s
-                    """, (sn_type, rlap, version,z, phase, int(tides_id)))
+                    """, (sn_type, rlap, version, z, zerr, phase, int(tides_id)))
                     if cur.rowcount == 0:
                         cur.execute("""
-                            INSERT INTO pipeline_classification_snid (tides_id, sn_type, probability, version, z, phase)
-                            VALUES (%s, %s, %s, %s, %s, %s)
-                        """, (int(tides_id), sn_type, rlap, version, z, phase))
+                            INSERT INTO pipeline_classification_snid (tides_id, sn_type, probability, version, z, zerr, phase)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """, (int(tides_id), sn_type, rlap, version, z, zerr, phase))
                         cur.execute("""
-                            INSERT INTO pipeline_classification_global (tides_id, sn_type, probability, version, z, phase)
-                            VALUES (%s, %s, %s, %s, %s, %s)
-                        """, (int(tides_id), sn_type, rlap, version, z, phase))
+                            INSERT INTO pipeline_classification_global (tides_id, sn_type, probability, version, z, zerr, phase)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """, (int(tides_id), sn_type, rlap, version, z, zerr, phase))
             self.log.info(f"[snid] Upserted minimal classification (tides_id={tides_id}, sn_type={sn_type}, rlap={rlap}, version='{version}')")
         except Exception as e:
             self.log.warning(f"[snid] Minimal DB write failed: {e}")
