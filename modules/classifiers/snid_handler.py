@@ -283,6 +283,10 @@ class SnidHandler:
                             INSERT INTO pipeline_classification_snid (tides_id, sn_type, probability, version)
                             VALUES (%s, %s, %s, %s)
                         """, (int(tides_id), sn_type, rlap, version))
+                        cur.execute("""
+                            INSERT INTO pipeline_classification_global (tides_id, sn_type, probability, version)
+                            VALUES (%s, %s, %s, %s)
+                        """, (int(tides_id), sn_type, rlap, version))
             self.log.info(f"[snid] Upserted minimal classification (tides_id={tides_id}, sn_type={sn_type}, rlap={rlap}, version='{version}')")
         except Exception as e:
             self.log.warning(f"[snid] Minimal DB write failed: {e}")
