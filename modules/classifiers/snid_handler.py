@@ -278,6 +278,11 @@ class SnidHandler:
                         SET sn_type = %s, probability = %s, version = %s
                         WHERE tides_id = %s
                     """, (sn_type, rlap, version, int(tides_id)))
+                    cur.execute("""
+                        UPDATE pipeline_classification_global
+                        SET sn_type = %s, probability = %s, version = %s
+                        WHERE tides_id = %s
+                    """, (sn_type, rlap, version, int(tides_id)))
                     if cur.rowcount == 0:
                         cur.execute("""
                             INSERT INTO pipeline_classification_snid (tides_id, sn_type, probability, version)
