@@ -14,11 +14,11 @@ This README covers configuration, Docker-based deployment, local development, an
 
 1) Create a .env (not committed) with your remote DB and classifier URLs:
 ```env
-DB_HOST=db.example.org
-DB_PORT=5432
-DB_NAME=tides_db
-DB_USER=tides_user
-DB_PASSWORD=supersecret
+DB_HOST
+DB_PORT
+DB_NAME
+DB_USER
+DB_PASSWORD
 DB_SSLMODE=require
 
 # Classifier services (inside compose network or external)
