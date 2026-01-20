@@ -374,7 +374,10 @@ class PipelineManager:
                 logger.exception(f"[classification_api] SNID failed for {obj_id}: {e}")
         return results
 
-    def run(self, night=None, objects=None, one_shot: bool = False, sleep_seconds: int = 60):
+    def run(self, night=None, objects=None, one_shot: bool = False, sleep_seconds: int = 60, env: str = "operations"):
+        # Inject env into config so modules can use it (e.g. for path construction)
+        self.config["env"] = env
+        
         logger = setup_logger(night, self.config)
         self.current_night = str(night or "")
         obj_names: list = []  # ensure defined even if ingestion didn’t run
@@ -386,7 +389,7 @@ class PipelineManager:
             logger.error(f"[config] Invalid spectra_night_dir: {e}")
             return
 
-        logger.info(f"Pipeline starting (night={night}, one_shot={one_shot}, sleep={sleep_seconds}s)")
+        logger.info(f"Pipeline starting (night={night}, one_shot={one_shot}, sleep={sleep_seconds}s, env={env})")
         # Redirect thumbnails to spectra night dir (single source of truth)
         thumb_dir = self._spectra_night_dir()
         self.config.setdefault("data_paths", {})

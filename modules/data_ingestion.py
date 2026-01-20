@@ -79,16 +79,26 @@ class DataIngestion(Module):
     def process_night(self, night):
         # Use paths from environment variables (for containers) or fall back to config file (for local development)
         self.logger.info(f"Starting data ingestion for night: {night}")
+        
+        env = self.config.get("env", "operations")
+
         deliveries_dir = os.getenv('DELIVERIES_DIR') or self.config['data_paths']['deliveries_dir']
         spectra_dir = os.getenv('SPECTRA_DIR') or self.config['data_paths']['spectra_dir']
         archive_dir = self.config['data_paths']['archive_dir']  # Keep from config as no container env var needed
         self.logger.info(f"Using deliveries_dir: {deliveries_dir}")
         self.logger.info(f"Using spectra_dir: {spectra_dir}")
-        night_dir = os.path.join(deliveries_dir, night)
+        self.logger.info(f"Processing for environment: {env}")
+
+        night_dir = os.path.join(deliveries_dir, env, night)
         self.logger.info(f"Looking for deliveries in nightly deliveries directory: {night_dir}")
-        spectra_night_dir = os.path.join(spectra_dir, night)
+        
+        spectra_night_dir = os.path.join(spectra_dir, env, night)
         self.logger.info(f"Spectra will be saved in spectra directory: {spectra_night_dir}")
-        archive_night_dir = os.path.join(archive_dir, night)
+        
+        # Ensure thumbnails go to the correct env-aware directory
+        self.config['data_paths']['static_plots_dir'] = spectra_night_dir
+        
+        archive_night_dir = os.path.join(archive_dir, env, night)
         self.logger.info(f"Archives will be saved in archive directory: {archive_night_dir}")
 
         # Ensure output dir exists before writing any files or DONE flags

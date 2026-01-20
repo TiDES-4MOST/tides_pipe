@@ -9,11 +9,17 @@ logging.basicConfig(level=logging.INFO)
 
 class IngestRequest(BaseModel):
     night: str  # e.g. "20250129"
+    env: str = "operations"
 
-def _run_manager_once(night: str):
+def _run_manager_once(night: str, env: str):
     try:
+        # Only process operations for now, as requested
+        if env != "operations":
+            log.info(f"Skipping pipeline run for env='{env}' (currently only 'operations' supported)")
+            return
+            
         mgr = PipelineManager()
-        mgr.run(night=night, one_shot=True, sleep_seconds=1)
+        mgr.run(night=night, one_shot=True, sleep_seconds=1, env=env)
     except Exception as e:
         log.exception(f"Manager failed for night {night}: {e}")
 
@@ -25,8 +31,8 @@ def health():
 def ingest(req: IngestRequest, bg: BackgroundTasks):
     if not req.night or not req.night.isdigit():
         raise HTTPException(status_code=400, detail="night must be YYYYMMDD")
-    bg.add_task(_run_manager_once, req.night)
-    return {"accepted": True, "night": req.night}
+    bg.add_task(_run_manager_once, req.night, req.env)
+    return {"accepted": True, "night": req.night, "env": req.env}
 
 class ClassifyRequest(BaseModel):
     night: str                  # e.g. "20250129"

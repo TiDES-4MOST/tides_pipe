@@ -26,13 +26,18 @@ def setup_logging():
     except Exception:
         pass
 
-def night_from_path(path: str) -> str | None:
+def info_from_path(path: str):
     rel = os.path.relpath(path, DELIVERIES_DIR)
     parts = rel.split(os.sep)
-    return parts[0] if parts and parts[0].isdigit() else None
+    # New structure: <env>/<night>/...
+    # parts[0] is env, parts[1] is night
+    if len(parts) >= 2 and parts[1].isdigit():
+        return parts[0], parts[1]
+    return None, None
 
 class MECHandler(FileSystemEventHandler):
     def __init__(self):
+        # Key is now (env, night) tuple
         self._pending = {}
 
     def on_created(self, event):
@@ -46,25 +51,27 @@ class MECHandler(FileSystemEventHandler):
             self._schedule(event.src_path)
 
     def _schedule(self, path: str):
-        n = night_from_path(path)
-        if n:
-            logger.info(f"Scheduled night {n} for file {path}")
-            self._pending[n] = time.time()
-            logging.debug("Scheduled night %s from path %s", n, path)
+        env, n = info_from_path(path)
+        if env and n:
+            key = (env, n)
+            logger.info(f"Scheduled env {env} night {n} for file {path}")
+            self._pending[key] = time.time()
+            logging.debug("Scheduled env %s night %s from path %s", env, n, path)
 
     def flush(self):
         now = time.time()
-        ready = [n for n, t in list(self._pending.items()) if now - t > DEBOUNCE_SEC]
-        for night in ready:
+        # Key is (env, night)
+        ready = [key for key, t in list(self._pending.items()) if now - t > DEBOUNCE_SEC]
+        for (env, night) in ready:
             try:
-                logging.info("Triggering ingestion for night %s", night)
-                r = httpx.post(f"{PIPELINE_API}/ingest", json={"night": night}, timeout=30)
+                logging.info("Triggering ingestion for env %s night %s", env, night)
+                r = httpx.post(f"{PIPELINE_API}/ingest", json={"env": env, "night": night}, timeout=30)
                 r.raise_for_status()
-                logging.info("Ingestion triggered for night %s: %s", night, r.json())
+                logging.info("Ingestion triggered for env %s night %s: %s", env, night, r.json())
             except Exception as e:
-                logging.exception("Failed to trigger ingestion for night %s: %s", night, e)
+                logging.exception("Failed to trigger ingestion for env %s night %s: %s", env, night, e)
             finally:
-                self._pending.pop(night, None)
+                self._pending.pop((env, night), None)
 
 def main():
     setup_logging()
