@@ -13,6 +13,7 @@ import hashlib
 from tides_pipe.utils.paths import spectra_night_dir as get_spectra_night_dir, spectrum_path
 from itertools import islice
 from typing import Optional, Dict, Any
+from tides_pipe.utils import submit_transients as trans_api
 try:
     from tides_pipe.utils import dbutil
 except Exception:
@@ -22,6 +23,10 @@ class DataIngestion(Module):
     def __init__(self, config):
         self.config = config or {}
         self._db_conn = None
+        # Temp ID state per night (e.g., 20260120_1)
+        self._temp_prefix = None
+        self._temp_counter = 0
+        self._last_was_temp = False
 
     @staticmethod
     def _json_default(o):
@@ -79,6 +84,9 @@ class DataIngestion(Module):
     def process_night(self, night):
         # Use paths from environment variables (for containers) or fall back to config file (for local development)
         self.logger.info(f"Starting data ingestion for night: {night}")
+        # Set TEMP id prefix to the night label (expected YYYYMMDD)
+        self._temp_prefix = str(night)
+        self._temp_counter = 0
         
         env = self.config.get("env", "operations")
 
@@ -166,33 +174,41 @@ class DataIngestion(Module):
             pix = np.arange(1, n + 1, dtype=float)
             wave = crval1 + (pix - float(crpix1)) * float(cdelt1)
 
-            # Preload valid tides_ids from tides_cand to ensure OBJ_NME matches
-            valid_ids = set()
-            tides_db_conn = self.connect_to_db()
-            if not tides_db_conn:
-                self.logger.error("Failed to connect to database to validate tides_id")
-                return obj_names
-            
-            self.logger.info("Successfully connected to database")
+            # Optional: preload known tides_ids from tidestom.tides_cand (fast path when OBJ_NME==tides_id)
+            valid_ids: set[int] = set()
             try:
-                cur = tides_db_conn.cursor()
-                cur.execute("SELECT tides_id FROM tides_cand")
-                valid_ids = {int(r[0]) for r in cur.fetchall()}
-                self.logger.info(f"Loaded {len(valid_ids)} valid tides_ids from tides_cand table")
+                tidestom_conn = self.connect_to_db()  # default DB (tidestom)
+                if tidestom_conn:
+                    with tidestom_conn.cursor() as cur:
+                        cur.execute("SELECT tides_id FROM tides_cand")
+                        valid_ids = {int(r[0]) for r in cur.fetchall()}
+                    tidestom_conn.close()
+                    self.logger.info(f"Loaded {len(valid_ids)} tides_ids from tidestom.tides_cand (fast path)")
+                else:
+                    self.logger.warning("No connection to tidestom; skipping fast-path preload of tides_cand ids")
             except Exception as e:
-                self.logger.error(f"Could not fetch tides_cand ids: {e}")
-            finally:
-                tides_db_conn.close()
+                try:
+                    tidestom_conn and tidestom_conn.close()
+                except Exception:
+                    pass
+                self.logger.warning(f"Preload tides_cand ids failed: {e}")
 
             # Iterate all spectra in the file
             for counter, (flux, fluxerr, qual) in enumerate(zip(specdata['FLUX'], specdata['ERR_FLUX'], specdata['QUAL'])):
                 try:
                     meta = fibinfodat[counter]
-                    obj_id = int(meta['OBJ_NME'])#self._obj_nme_to_bigint(meta['OBJ_NME']) To put back in when tides_cand.tides_id is a bigint
-                    if obj_id not in valid_ids:
-                        self.logger.warning(f"OBJ_NME {obj_id} not found in tides_cand; skipping.")
+                    # Resolve tides_id using OBJ_NME fast path, else via OSTD/4MOST → tides_master → TEMP fallback
+                    obj_id = self._resolve_tides_id(meta, valid_ids)
+                    if obj_id is None:
+                        self.logger.warning("Could not resolve tides_id for spectrum; skipping.")
                         continue
                     obj_names.append(str(obj_id))
+
+                    # Ensure tides_cand contains tides_id; insert if missing (tidestom DB)
+                    try:
+                        self._ensure_tides_cand(int(obj_id))
+                    except Exception as e:
+                        self.logger.warning(f"Failed to ensure tides_cand({obj_id}): {e}")
 
                     # Filepaths use the tides_id (OBJ_NME)
                     spectrum_file = os.path.join(spectra_night_dir, f"{obj_id}_spectrum.txt")
@@ -232,10 +248,11 @@ class DataIngestion(Module):
                     if obs_mjd is None and obs_date is None:
                         obs_date = datetime.now().isoformat()
 
+                    # Build base metadata; store TIDES_ID as string for compatibility
                     metadata = {
-                        'TIDES_ID': int(obj_id),
+                        'TIDES_ID': str(obj_id),
                         'QMOST_ID': self._compute_qmost_id(obj_id, spectrum_file),
-                        'TYPE': 'pending',
+                        'TYPE': 'temp' if self._last_was_temp else 'pending',
                         'OBS_DATE': obs_date,
                         'OBS_MJD': float(obs_mjd) if obs_mjd is not None else None,
                         'SNR': _mget(meta, 'SNR', None),
@@ -243,6 +260,30 @@ class DataIngestion(Module):
                         'SKY_BRIGHTNESS': _mget(meta, 'SKYBRITE', None) or _mget(meta, 'SKY_BRIGHT', None),
                         'VERSION':1 #_mget(meta, 'QMOST_PIPELINE_VERSION', '1.0'),
                     }
+
+                    # Enrich metadata and ensure BaseTarget exists in tidestom for downstream usage
+                    master_info = self._lookup_master_info(meta)
+                    name_for_bt = None
+                    ra_for_bt = None
+                    dec_for_bt = None
+                    if master_info:
+                        metadata.update({
+                            'TARGET_NAME': master_info.get('name'),
+                            'RA': master_info.get('ra'),
+                            'DEC': master_info.get('dec')
+                        })
+                        name_for_bt = master_info.get('name')
+                        ra_for_bt = master_info.get('ra')
+                        dec_for_bt = master_info.get('dec')
+                    else:
+                        # Try to extract RA/Dec directly from the fiber metadata row
+                        ra_for_bt, dec_for_bt = self._extract_coords_from_meta(meta)
+                    if not name_for_bt:
+                        name_for_bt = f"TEMP-{obj_id}"
+                    try:
+                        self._ensure_basetarget(int(obj_id), name_for_bt, ra_for_bt, dec_for_bt)
+                    except Exception as e:
+                        self.logger.debug(f"Ensure BaseTarget failed for {obj_id}: {e}")
 
                     # Update tides_spec with metadata (stores thumbnail path in additional_info)
                     self.update_tides_spec(str(obj_id), metadata, spectrum_file, thumbnail_file)
@@ -253,6 +294,325 @@ class DataIngestion(Module):
                 except Exception as e:
                     self.logger.error(f"Error processing spectrum {counter} in file {file_path}: {e}")
         return obj_names
+
+    # --------- ID resolution helpers ---------
+
+    def _get_api_token(self) -> Optional[str]:
+        return os.getenv('TRANSIENT_API_TOKEN')
+
+    def _next_temp_id(self) -> int:
+        """
+        Generate the next TEMP id for the current night in the format
+        <YYYYMMDD><cc> (two-digit counter), e.g., 2026012001.
+        This remains within 32-bit INTEGER limits while being obviously date-coded.
+        """
+        prefix = self._temp_prefix or datetime.now().strftime('%Y%m%d')
+        self._temp_counter += 1
+        # Two-digit counter appended to date; cycles after 99
+        return int(f"{prefix}{self._temp_counter:02d}")
+
+    def _resolve_tides_id(self, meta_row, valid_ids: set[int]) -> Optional[int]:
+        """
+        Resolve the TiDES `tides_id` for a spectrum row.
+        Priority:
+          1) If FIBMETATAB.OBJ_NME parses to int and exists in tidestom.tides_cand -> use it.
+          2) Else, use OSTD/4MOST IDs from the MEC row and query tides.tides_master.
+             If only OSTD IDs available, map via Transients API to 4MOST ID and then master.
+          3) If all mapping fails, return a TEMP id for the night: <YYYYMMDD>_<n>.
+        """
+        self._last_was_temp = False
+        # 1) Fast path from OBJ_NME
+        try:
+            obj_val = meta_row['OBJ_NME']
+            obj_id_fast = int(obj_val)
+            if obj_id_fast in valid_ids:
+                return int(obj_id_fast)
+        except Exception:
+            pass
+
+        # 2) Extract possible identifiers from the fiber metadata (case-insensitive lookup)
+        def _get_any(row, candidates):
+            names_l = {n.lower(): n for n in getattr(row, 'names', [])}
+            for cand in candidates:
+                k = names_l.get(cand.lower())
+                if k is not None:
+                    try:
+                        return row[k]
+                    except Exception:
+                        continue
+            return None
+
+        ostd_u_obj = _get_any(meta_row, ['ostd_u_obj_id', 'ostd_uobj_id', 'u_obj_id'])
+        ostd_targ  = _get_any(meta_row, ['ostd_targ_id', 'ostd_target_id', 'targ_id'])
+        pk_4most   = _get_any(meta_row, ['pk_4most', 'fourmost_id', '4most_id', 'pk_4m'])
+
+        # Query tides_master for tides_id using whichever IDs we have
+        master = self._query_tides_master(pk_4most=pk_4most, ostd_u_obj_id=ostd_u_obj, ostd_targ_id=ostd_targ)
+        if master and isinstance(master.get('tides_id'), (int, np.integer)):
+            return int(master['tides_id'])
+
+        # If master lookup failed and we only have OSTD IDs, try mapping via the Transients API
+        if (ostd_u_obj or ostd_targ) and not pk_4most:
+            token = self._get_api_token()
+            if token:
+                try:
+                    trans_api.ACCESS_TOKEN = token
+                    flt_parts = []
+                    if ostd_u_obj is not None:
+                        flt_parts.append(f"ostd_u_obj_id__exact={int(ostd_u_obj)}")
+                    if ostd_targ is not None:
+                        flt_parts.append(f"ostd_targ_id__exact={int(ostd_targ)}")
+                    flt = "&".join(flt_parts)
+                    res = trans_api.get_list(flt=flt, limit=1, timeout=15, return_mode="listdict")
+                    if isinstance(res, list) and res:
+                        cand = res[0]
+                        pk_4 = None
+                        # Prefer an explicit pk_4most if present; else API id
+                        if isinstance(cand, dict):
+                            pk_4 = cand.get('pk_4most') or cand.get('id')
+                        master = self._query_tides_master(pk_4most=pk_4, ostd_u_obj_id=ostd_u_obj, ostd_targ_id=ostd_targ)
+                        if master and isinstance(master.get('tides_id'), (int, np.integer)):
+                            return int(master['tides_id'])
+                except Exception as e:
+                    self.logger.debug(f"Transients API mapping failed: {e}")
+
+        # 3) TEMP fallback when no resolution was possible
+        self._last_was_temp = True
+        return self._next_temp_id()
+
+    def _extract_coords_from_meta(self, row) -> tuple[Optional[float], Optional[float]]:
+        """Attempt to read RA/Dec (degrees) from the fiber metadata row."""
+        def _get_any(r, candidates):
+            names_l = {n.lower(): n for n in getattr(r, 'names', [])}
+            for cand in candidates:
+                k = names_l.get(cand.lower())
+                if k is not None:
+                    try:
+                        return r[k]
+                    except Exception:
+                        continue
+            return None
+        ra_raw = _get_any(row, [
+            'ra','ra_deg','ra_degree','ra2000','alpha_j2000','ra_obj','obj_ra','ra_mean','ra_deg_j2000'
+        ])
+        dec_raw = _get_any(row, [
+            'dec','dec_deg','dec_degree','dec2000','delta_j2000','dec_obj','obj_dec','dec_mean','dec_deg_j2000'
+        ])
+        ra_val = None
+        dec_val = None
+        try:
+            if ra_raw is not None:
+                r = float(ra_raw)
+                ra_val = r * 15.0 if 0.0 <= r <= 24.0 else r
+        except Exception:
+            pass
+        try:
+            if dec_raw is not None:
+                dec_val = float(dec_raw)
+        except Exception:
+            pass
+        return ra_val, dec_val
+
+    def _get_table_columns(self, conn, table_name: str) -> Dict[str, Dict[str, Any]]:
+        schema = 'public'
+        table = table_name
+        if '.' in table_name:
+            parts = table_name.split('.', 1)
+            schema, table = parts[0], parts[1]
+        sql = """
+          SELECT column_name, is_nullable, column_default, data_type, udt_name
+          FROM information_schema.columns
+          WHERE table_schema = %s AND table_name = %s
+        """
+        with conn.cursor() as cur:
+            cur.execute(sql, (schema, table))
+            return {
+                r[0]: {
+                    'nullable': (r[1] == 'YES'),
+                    'default': r[2],
+                    'data_type': r[3],
+                    'udt_name': r[4],
+                }
+                for r in cur.fetchall()
+            }
+
+    def _placeholder_for(self, meta: Dict[str, Any]):
+        """Return sensible placeholder given a column's type metadata."""
+        dt = (meta.get('udt_name') or meta.get('data_type') or '').lower()
+        if any(k in dt for k in ('int','float','double','real','numeric','dec')):
+            return -9
+        if 'bool' in dt:
+            return False
+        if 'timestamp' in dt:
+            return datetime.now()
+        if 'date' in dt:
+            return datetime(1970,1,1)
+        if 'json' in dt:
+            return '{}'
+        return 'UNKNOWN'
+
+    def _ensure_basetarget(self, tides_id: int, name: str, ra: Optional[float], dec: Optional[float]):
+        """
+        Upsert into tom_targets_basetarget so tidestom can use TEMP/real IDs downstream.
+        Fills required NOT NULL columns with placeholders if necessary.
+        """
+        conn = self.connect_to_db()  # tidestom
+        if not conn:
+            return
+        try:
+            with conn:
+                cols_info = self._get_table_columns(conn, 'tom_targets_basetarget')
+                cols = []
+                vals = []
+                # Core fields
+                if 'id' in cols_info:
+                    cols.append('id'); vals.append(int(tides_id))
+                if 'name' in cols_info:
+                    cols.append('name'); vals.append(str(name))
+                if 'type' in cols_info:
+                    cols.append('type'); vals.append('SIDEREAL')
+                if 'slug' in cols_info:
+                    cols.append('slug'); vals.append(str(name).lower())
+                if 'created' in cols_info:
+                    cols.append('created'); vals.append(datetime.now())
+                if 'modified' in cols_info:
+                    cols.append('modified'); vals.append(datetime.now())
+                # Coords
+                if 'ra' in cols_info and ra is not None:
+                    cols.append('ra'); vals.append(float(ra))
+                if 'dec' in cols_info and dec is not None:
+                    cols.append('dec'); vals.append(float(dec))
+
+                # Ensure NOT NULL columns are present
+                required_missing = [
+                    c for c, meta in cols_info.items()
+                    if not meta['nullable'] and meta['default'] is None and c not in cols
+                ]
+                for c in required_missing:
+                    cols.append(c); vals.append(self._placeholder_for(cols_info[c]))
+
+                # Build UPSERT
+                set_clause = ", ".join(f"{c}=EXCLUDED.{c}" for c in cols if c != 'id')
+                placeholders = ",".join(["%s"] * len(vals))
+                sql = f"INSERT INTO tom_targets_basetarget ({', '.join(cols)}) VALUES ({placeholders}) " \
+                      f"ON CONFLICT (id) DO UPDATE SET {set_clause}"
+                with conn.cursor() as cur:
+                    cur.execute(sql, tuple(vals))
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _query_tides_master(self, pk_4most=None, ostd_u_obj_id=None, ostd_targ_id=None) -> Optional[Dict[str, Any]]:
+        """
+        Query tides.tides_master for a candidate using provided identifiers.
+        Returns dict with keys: tides_id, name, ra, dec (when found), else None.
+        """
+        # Connect to the 'tides' database (same creds, different name)
+        tides_db_name = os.getenv('TIDES_DB_NAME') or 'tides'
+        conn = self.connect_to_db(db_name=tides_db_name)
+        if not conn:
+            return None
+        try:
+            where = []
+            params = []
+            if pk_4most is not None:
+                where.append("pk_4most = %s")
+                params.append(int(pk_4most))
+            if ostd_u_obj_id is not None:
+                where.append("ostd_u_obj_id = %s")
+                params.append(int(ostd_u_obj_id))
+            if ostd_targ_id is not None:
+                where.append("ostd_targ_id = %s")
+                params.append(int(ostd_targ_id))
+            if not where:
+                return None
+            sql = "SELECT tides_id, name, ra, dec FROM tides_master WHERE " + " OR ".join(where) + " LIMIT 1"
+            with conn.cursor() as cur:
+                cur.execute(sql, tuple(params))
+                row = cur.fetchone()
+                if row:
+                    return { 'tides_id': row[0], 'name': row[1], 'ra': row[2], 'dec': row[3] }
+                return None
+        except Exception as e:
+            self.logger.debug(f"tides_master lookup failed: {e}")
+            return None
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _ensure_tides_cand(self, tides_id: int):
+        """Insert tides_id into tidestom.tides_cand if missing."""
+        conn = self.connect_to_db()  # default DB (tidestom)
+        if not conn:
+            return
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1 FROM tides_cand WHERE tides_id = %s", (int(tides_id),))
+                    if cur.fetchone():
+                        return
+                    cur.execute("INSERT INTO tides_cand (tides_id) VALUES (%s) ON CONFLICT (tides_id) DO NOTHING", (int(tides_id),))
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _lookup_master_info(self, meta_row) -> Optional[Dict[str, Any]]:
+        """Convenience to reuse _query_tides_master with IDs present in the row."""
+        def _get_any(row, cands):
+            names_l = {n.lower(): n for n in getattr(row, 'names', [])}
+            for cand in cands:
+                k = names_l.get(cand.lower())
+                if k is not None:
+                    try:
+                        return row[k]
+                    except Exception:
+                        continue
+            return None
+        return self._query_tides_master(
+            pk_4most=_get_any(meta_row, ['pk_4most', 'fourmost_id', '4most_id']),
+            ostd_u_obj_id=_get_any(meta_row, ['ostd_u_obj_id', 'ostd_uobj_id', 'u_obj_id']),
+            ostd_targ_id=_get_any(meta_row, ['ostd_targ_id', 'ostd_target_id', 'targ_id'])
+        )
+
+    def _update_basetarget_coords(self, tides_id: int, ra: Any, dec: Any):
+        """
+        Best-effort update of tom_targets_basetarget.ra/dec so tidestom templates that
+        reference target.ra/target.dec have coordinates. Only runs when values are present.
+        """
+        if ra is None and dec is None:
+            return
+        conn = self.connect_to_db()  # tidestom
+        if not conn:
+            return
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    sets = []
+                    params = []
+                    if ra is not None:
+                        sets.append("ra = %s")
+                        params.append(float(ra))
+                    if dec is not None:
+                        sets.append("dec = %s")
+                        params.append(float(dec))
+                    if not sets:
+                        return
+                    params.append(int(tides_id))
+                    sql = f"UPDATE tom_targets_basetarget SET {', '.join(sets)} WHERE id = %s"
+                    cur.execute(sql, tuple(params))
+        except Exception as e:
+            self.logger.debug(f"tom_targets_basetarget RA/Dec update failed: {e}")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def generate_thumbnail(self, wavelength, flux, thumbnail_file):
         """
