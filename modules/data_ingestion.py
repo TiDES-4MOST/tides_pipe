@@ -219,7 +219,7 @@ class DataIngestion(Module):
                 return default
 
             # Iterate all spectra in the file
-            for counter, (flux, fluxerr, qual) in enumerate(zip(specdata['FLUX'], specdata['ERR_FLUX'], specdata['QUAL'])):
+            for counter, (flux, fluxerr, qual) in enumerate(zip(specdata['FLUX'], specdata['FLUX_IVAR'], specdata['QUAL'])):
                 try:
                     meta = fibinfodat[counter]
                     obrow = None
