@@ -13,9 +13,10 @@ class IngestRequest(BaseModel):
 
 def _run_manager_once(night: str, env: str):
     try:
-        # Only process operations for now, as requested
-        if env != "operations":
-            log.info(f"Skipping pipeline run for env='{env}' (currently only 'operations' supported)")
+        # Allow both operations and dev environments
+        allowed_envs = {"operations", "dev"}
+        if env not in allowed_envs:
+            log.info(f"Skipping pipeline run for env='{env}' (allowed: {allowed_envs})")
             return
             
         mgr = PipelineManager()

@@ -152,6 +152,7 @@ class DataIngestion(Module):
 
     def process_file(self, file_path, spectra_night_dir, max_spectra: int | None = None):
         self.logger.info(f"Parsing data from {file_path}")
+        env = self.config.get("env", "operations")
         obj_names = []
 
         # Always parse FITS file contents (no test mode)
@@ -159,6 +160,12 @@ class DataIngestion(Module):
             fibinfodat = hdulist['FIBMETATAB'].data
             specdata = hdulist[2].data
             specheader = hdulist[2].header
+            # Optional: primary header and OBMETATAB for additional metadata
+            primary_header = hdulist[0].header if len(hdulist) > 0 else {}
+            try:
+                obmetadat = hdulist['OBMETATAB'].data
+            except Exception:
+                obmetadat = None
 
             # Build wavelength array from header keywords (linear WCS)
             try:
@@ -193,10 +200,34 @@ class DataIngestion(Module):
                     pass
                 self.logger.warning(f"Preload tides_cand ids failed: {e}")
 
+            # Helper to pull a value from a numpy record row with multiple candidate names
+            def _row_get(row, candidates, default=None):
+                if row is None:
+                    return default
+                try:
+                    names = list(getattr(row, 'dtype', {}).names or [])
+                except Exception:
+                    names = []
+                name_map = {str(n).lower(): n for n in names}
+                for c in candidates:
+                    key = name_map.get(str(c).lower())
+                    if key is not None:
+                        try:
+                            return row[key]
+                        except Exception:
+                            continue
+                return default
+
             # Iterate all spectra in the file
             for counter, (flux, fluxerr, qual) in enumerate(zip(specdata['FLUX'], specdata['ERR_FLUX'], specdata['QUAL'])):
                 try:
                     meta = fibinfodat[counter]
+                    obrow = None
+                    try:
+                        if obmetadat is not None and counter < len(obmetadat):
+                            obrow = obmetadat[counter]
+                    except Exception:
+                        obrow = None
                     # Resolve tides_id using OBJ_NME fast path, else via OSTD/4MOST → tides_master → TEMP fallback
                     obj_id = self._resolve_tides_id(meta, valid_ids)
                     if obj_id is None:
@@ -258,8 +289,51 @@ class DataIngestion(Module):
                         'SNR': _mget(meta, 'SNR', None),
                         'SEEING': _mget(meta, 'SEEING', None),
                         'SKY_BRIGHTNESS': _mget(meta, 'SKYBRITE', None) or _mget(meta, 'SKY_BRIGHT', None),
-                        'VERSION':1 #_mget(meta, 'QMOST_PIPELINE_VERSION', '1.0'),
+                        'VERSION':1, #_mget(meta, 'QMOST_PIPELINE_VERSION', '1.0'),
+                        'PIPELINE_ENV': env,
                     }
+
+                    # Add selected primary header fields
+                    try:
+                        l1_ver = primary_header.get('PROCSOFT')
+                    except Exception:
+                        l1_ver = None
+                    try:
+                        file_date = primary_header.get('DATE')
+                    except Exception:
+                        file_date = None
+                    if l1_ver is not None:
+                        metadata['L1_PROCSOFT'] = l1_ver
+                    if file_date is not None:
+                        metadata['FILE_DATE'] = file_date
+
+                    # Add selected OBMETATAB per-spectrum fields (best-effort; keys vary)
+                    ob_fields = {
+                        'OB_TARGET': ['TARG_DES', 'TARGET', 'PI_TARG', 'TARGNAME', 'OBJNAME'],
+                        'OB_RA': ['RA', 'RA_DEG'],
+                        'OB_DEC': ['DEC', 'DEC_DEG'],
+                        'OB_TINT_ELEM_S': ['TINT', 'DIT', 'TINT_ELEM', 'EXPTIME_ELEM'],
+                        'OB_TINT_SUM_S': ['TINTSUM', 'EXPTIME', 'SUM_EXPTIME'],
+                        'OB_START': ['OBS_START', 'START_UTC', 'DATE_BEG', 'START_ISO'],
+                        'OB_END': ['OBS_END', 'END_UTC', 'DATE_END', 'END_ISO'],
+                        'OB_DATE': ['OBS_DATE', 'DATE_OBS', 'DATE'],
+                        'SPECTRO_PATH': ['SPECTRO_PATH', 'SPECTRO', 'SPECTROG'],
+                        'OBS_TYPE': ['OBS_TYPE', 'OBSTYPE', 'OBSERVATION_TYPE'],
+                        'BIN_SPEC': ['BIN_SPEC', 'BIN_SPECTRA'],
+                        'BIN_SPAT': ['BIN_SPAT', 'BIN_SPATIAL'],
+                        'SNR_MEDIAN': ['SNR_MED', 'SNR_MEDIAN'],
+                        'SNR_MIN': ['SNR_MIN'],
+                        'SNR_MAX': ['SNR_MAX'],
+                        'L1_PROCESS_DATE': ['PROC_DATE', 'L1PROC_DATE', 'PROC_DT']
+                    }
+                    for k, cands in ob_fields.items():
+                        val = _row_get(obrow, cands, None)
+                        if val is not None:
+                            # Coerce numpy scalars to python types via _json_default
+                            try:
+                                metadata[k] = self._json_default(val)
+                            except Exception:
+                                metadata[k] = str(val)
 
                     # Enrich metadata and ensure BaseTarget exists in tidestom for downstream usage
                     master_info = self._lookup_master_info(meta)

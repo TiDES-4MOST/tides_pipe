@@ -377,6 +377,13 @@ class PipelineManager:
     def run(self, night=None, objects=None, one_shot: bool = False, sleep_seconds: int = 60, env: str = "operations"):
         # Inject env into config so modules can use it (e.g. for path construction)
         self.config["env"] = env
+        # Ensure spectra_dir in config is env-aware so util paths align with ingestion
+        dp = self.config.setdefault("data_paths", {})
+        base = dp.get("spectra_dir") or "/data/spectra"
+        allowed_envs = ("operations", "dev")
+        tail = os.path.basename(os.path.normpath(base))
+        base_root = os.path.dirname(os.path.normpath(base)) if tail in allowed_envs else base
+        dp["spectra_dir"] = os.path.join(base_root, env)
         
         logger = setup_logger(night, self.config)
         self.current_night = str(night or "")
