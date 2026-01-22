@@ -29,10 +29,20 @@ def setup_logging():
 def info_from_path(path: str):
     rel = os.path.relpath(path, DELIVERIES_DIR)
     parts = rel.split(os.sep)
-    # New structure: <env>/<night>/...
-    # parts[0] is env, parts[1] is night
-    if len(parts) >= 2 and parts[1].isdigit():
-        return parts[0], parts[1]
+    # Expected structure: <env>/<night>/...
+    # Accept night in formats: YYYYMMDD, YYYY-MM-DD, YYYY_MM_DD; else fall back to raw folder name
+    if len(parts) >= 2:
+        env = parts[0]
+        night_raw = parts[1]
+        night = None
+        # Direct digits (YYYYMMDD)
+        if night_raw.isdigit():
+            night = night_raw
+        else:
+            m = re.match(r"^(\d{4})[-_]?(\d{2})[-_]?(\d{2})$", night_raw)
+            if m:
+                night = "".join(m.groups())
+        return env, (night or night_raw)
     return None, None
 
 class MECHandler(FileSystemEventHandler):
