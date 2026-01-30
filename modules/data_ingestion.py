@@ -833,124 +833,88 @@ class DataIngestion(Module):
     # Update or insert a spectrum record for the given tides_id
     def update_tides_spec(self, tides_id: str, metadata: Dict[str, Any], spectrum_file: str, thumbnail_file: str):
         """
-        Persist ingestion outputs for a spectrum. Tries dbutil first; falls back to existing logic.
+        Upsert into public.tides_spec using the provided schema. Stores full metadata in additional_info
+        and maps core fields to dedicated columns.
         """
-        conn = self._db_connect()
-        if conn:
+        # Prepare values with safe typing
+        def _as_float(x):
             try:
-                with conn:
-                    with conn.cursor() as cur:
-                        # Adjust table/columns if your schema differs
-                        cur.execute(
-                            """
-                            CREATE TABLE IF NOT EXISTS tides_spec (
-                                tides_id    TEXT PRIMARY KEY,
-                                spec_path   TEXT NOT NULL,
-                                thumb_path  TEXT,
-                                meta        JSONB,
-                                updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                            );
-                            """
-                        )
-                        cur.execute(
-                            """
-                            INSERT INTO tides_spec (tides_id, spec_path, thumb_path, meta)
-                            VALUES (%s, %s, %s, %s)
-                            ON CONFLICT (tides_id)
-                            DO UPDATE SET
-                                spec_path = EXCLUDED.spec_path,
-                                thumb_path = EXCLUDED.thumb_path,
-                                meta = EXCLUDED.meta,
-                                updated_at = NOW();
-                            """,
-                            (str(tides_id), spectrum_file, thumbnail_file, json.dumps(metadata, default=self._json_default))
-                        )
-                if hasattr(self, "logger"):
-                    self.logger.info(f"[ingestion] Saved tides_spec for {tides_id}")
-                return
-            except Exception as e:
-                if hasattr(self, "logger"):
-                    self.logger.warning(f"[ingestion] dbutil save failed; falling back: {e}")
-                # fall through to legacy implementation below
+                return float(x) if x is not None else None
+            except Exception:
+                return None
 
-        # Fallback: use module's DB connector (tidestom) to upsert tides_spec
-        legacy = self.connect_to_db()
-        if not legacy:
+        def _as_int(x):
+            try:
+                return int(x) if x is not None else None
+            except Exception:
+                return None
+
+        qmost_id = _as_int(metadata.get('QMOST_ID'))
+        tides_id_int = _as_int(tides_id or metadata.get('TIDES_ID'))
+        sn_type = (metadata.get('TYPE') if metadata.get('TYPE') is not None else None)
+
+        obs_date_raw = metadata.get('OBS_DATE')
+        obs_date_dt = None
+        try:
+            if isinstance(obs_date_raw, datetime):
+                obs_date_dt = obs_date_raw
+            elif isinstance(obs_date_raw, str):
+                # Accept ISO strings
+                obs_date_dt = datetime.fromisoformat(obs_date_raw)
+        except Exception:
+            obs_date_dt = None
+
+        obs_mjd = _as_float(metadata.get('OBS_MJD'))
+        snr = _as_float(metadata.get('SNR'))
+        seeing = _as_float(metadata.get('SEEING'))
+        sky_brightness = _as_float(metadata.get('SKY_BRIGHTNESS'))
+        version = _as_int(metadata.get('VERSION'))
+        filepath = spectrum_file
+
+        # Build additional_info and include thumbnail path
+        additional_info = dict(metadata)
+        additional_info['THUMBNAIL'] = thumbnail_file
+        additional_info_json = json.dumps(additional_info, default=self._json_default)
+
+        # Use dbutil connection if available; else fallback to module DB
+        conn = self._db_connect() or self.connect_to_db()
+        if not conn:
             if hasattr(self, "logger"):
                 self.logger.error("[ingestion] No DB connection available for tides_spec upsert")
             return
+
         try:
-            with legacy:
-                with legacy.cursor() as cur:
-                    try:
-                        cur.execute(
-                            """
-                            CREATE TABLE IF NOT EXISTS tides_spec (
-                                tides_id    TEXT PRIMARY KEY,
-                                spec_path   TEXT NOT NULL,
-                                thumb_path  TEXT,
-                                meta        JSONB,
-                                updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                            );
-                            """
-                        )
-                        meta_value = json.dumps(metadata, default=self._json_default)
-                        updated_value = "NOW()"
-                    except Exception:
-                        legacy.rollback()
-                        cur.execute(
-                            """
-                            CREATE TABLE IF NOT EXISTS tides_spec (
-                                tides_id    TEXT PRIMARY KEY,
-                                spec_path   TEXT NOT NULL,
-                                thumb_path  TEXT,
-                                meta        TEXT,
-                                updated_at  TEXT NOT NULL
-                            );
-                            """
-                        )
-                        meta_value = json.dumps(metadata, default=self._json_default)
-                        # For non-Postgres, store ISO string for updated_at
-                        cur.execute(
-                            """
-                            INSERT INTO tides_spec (tides_id, spec_path, thumb_path, meta, updated_at)
-                            VALUES (%s, %s, %s, %s, %s)
-                            ON CONFLICT (tides_id)
-                            DO UPDATE SET
-                                spec_path = EXCLUDED.spec_path,
-                                thumb_path = EXCLUDED.thumb_path,
-                                meta = EXCLUDED.meta,
-                                updated_at = EXCLUDED.updated_at;
-                            """,
-                            (str(tides_id), spectrum_file, thumbnail_file, meta_value, datetime.now().isoformat())
-                        )
-                        if hasattr(self, "logger"):
-                            self.logger.info(f"[ingestion] Saved tides_spec (legacy) for {tides_id}")
-                        return
-                    # Postgres path (JSONB + NOW())
+            with conn:
+                with conn.cursor() as cur:
                     cur.execute(
                         """
-                        INSERT INTO tides_spec (tides_id, spec_path, thumb_path, meta)
-                        VALUES (%s, %s, %s, %s)
-                        ON CONFLICT (tides_id)
-                        DO UPDATE SET
-                            spec_path = EXCLUDED.spec_path,
-                            thumb_path = EXCLUDED.thumb_path,
-                            meta = EXCLUDED.meta,
-                            updated_at = NOW();
+                        INSERT INTO tides_spec (
+                            qmost_id, tides_id, sn_type, obs_date, obs_mjd,
+                            snr, seeing, sky_brightness, filepath, version, additional_info
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (qmost_id) DO UPDATE SET
+                            tides_id = EXCLUDED.tides_id,
+                            sn_type = EXCLUDED.sn_type,
+                            obs_date = EXCLUDED.obs_date,
+                            obs_mjd = EXCLUDED.obs_mjd,
+                            snr = EXCLUDED.snr,
+                            seeing = EXCLUDED.seeing,
+                            sky_brightness = EXCLUDED.sky_brightness,
+                            filepath = EXCLUDED.filepath,
+                            version = EXCLUDED.version,
+                            additional_info = EXCLUDED.additional_info;
                         """,
-                        (str(tides_id), spectrum_file, thumbnail_file, meta_value)
+                        (
+                            qmost_id, tides_id_int, sn_type, obs_date_dt, obs_mjd,
+                            snr, seeing, sky_brightness, filepath, version, additional_info_json
+                        )
                     )
             if hasattr(self, "logger"):
-                self.logger.info(f"[ingestion] Saved tides_spec (legacy) for {tides_id}")
+                self.logger.info(f"[ingestion] Upserted tides_spec (qmost_id={qmost_id}, tides_id={tides_id_int})")
         except Exception as e:
             if hasattr(self, "logger"):
-                self.logger.error(f"[ingestion] Legacy tides_spec upsert failed: {e}")
-        finally:
-            try:
-                legacy.close()
-            except Exception:
-                pass
+                self.logger.error(f"[ingestion] tides_spec upsert failed: {e}")
 
     def archive_files(self, night_dir, archive_night_dir):
         if not os.path.exists(archive_night_dir):
