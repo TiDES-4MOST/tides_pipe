@@ -295,10 +295,14 @@ class DataIngestion(Module):
                         'TYPE': 'temp' if self._last_was_temp else 'pending',
                         'OBS_DATE': obs_date,
                         'OBS_MJD': float(obs_mjd) if obs_mjd is not None else None,
-                        'SNR': _mget(meta, 'SNR', None),
-                        'SEEING': _mget(meta, 'SEEING', None),
-                        'SKY_BRIGHTNESS': _mget(meta, 'SKYBRITE', None) or _mget(meta, 'SKY_BRIGHT', None),
-                        'VERSION':1, #_mget(meta, 'QMOST_PIPELINE_VERSION', '1.0'),
+                        'SNR': self._json_default(_mget(meta, 'SNR', None)) if _mget(meta, 'SNR', None) is not None else None,
+                        'SEEING': self._json_default(_mget(meta, 'SEEING', None)) if _mget(meta, 'SEEING', None) is not None else None,
+                        'SKY_BRIGHTNESS': (
+                            self._json_default(_mget(meta, 'SKYBRITE', None))
+                            if _mget(meta, 'SKYBRITE', None) is not None
+                            else (self._json_default(_mget(meta, 'SKY_BRIGHT', None)) if _mget(meta, 'SKY_BRIGHT', None) is not None else None)
+                        ),
+                        'VERSION':1,
                         'PIPELINE_ENV': env,
                     }
 
@@ -859,7 +863,7 @@ class DataIngestion(Module):
                                 meta = EXCLUDED.meta,
                                 updated_at = NOW();
                             """,
-                            (str(tides_id), spectrum_file, thumbnail_file, json.dumps(metadata))
+                            (str(tides_id), spectrum_file, thumbnail_file, json.dumps(metadata, default=self._json_default))
                         )
                 if hasattr(self, "logger"):
                     self.logger.info(f"[ingestion] Saved tides_spec for {tides_id}")
@@ -878,7 +882,6 @@ class DataIngestion(Module):
         try:
             with legacy:
                 with legacy.cursor() as cur:
-                    # Create table if missing; prefer JSONB when available, else TEXT
                     try:
                         cur.execute(
                             """
@@ -891,9 +894,8 @@ class DataIngestion(Module):
                             );
                             """
                         )
-                        meta_value = json.dumps(metadata)
+                        meta_value = json.dumps(metadata, default=self._json_default)
                         updated_value = "NOW()"
-                        # Use a parameterized updated_at for compatibility when not Postgres below
                     except Exception:
                         legacy.rollback()
                         cur.execute(
@@ -907,7 +909,7 @@ class DataIngestion(Module):
                             );
                             """
                         )
-                        meta_value = json.dumps(metadata)
+                        meta_value = json.dumps(metadata, default=self._json_default)
                         # For non-Postgres, store ISO string for updated_at
                         cur.execute(
                             """
