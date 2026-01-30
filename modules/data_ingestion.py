@@ -354,8 +354,8 @@ class DataIngestion(Module):
                     ra_for_bt = None
                     dec_for_bt = None
                     if master_info:
+                        # Do not store TARGET_NAME in metadata
                         metadata.update({
-                            'TARGET_NAME': master_info.get('name'),
                             'RA': master_info.get('ra'),
                             'DEC': master_info.get('dec')
                         })
@@ -380,8 +380,8 @@ class DataIngestion(Module):
                         if ra_for_bt is not None and dec_for_bt is not None:
                             master_by_coords = self._query_tides_master_by_coords(ra_for_bt, dec_for_bt, tolerance_arcsec=2.0)
                             if master_by_coords:
+                                # Do not store TARGET_NAME in metadata
                                 metadata.update({
-                                    'TARGET_NAME': master_by_coords.get('name'),
                                     'RA': master_by_coords.get('ra'),
                                     'DEC': master_by_coords.get('dec')
                                 })
@@ -397,7 +397,8 @@ class DataIngestion(Module):
                     if not name_for_bt:
                         name_for_bt = f"TEMP-{obj_id}"
                     try:
-                        self._ensure_basetarget(int(obj_id), name_for_bt, ra_for_bt, dec_for_bt)
+                        # pass fiber meta so basetarget can use OBJ_RA/OBJ_DEC if needed
+                        self._ensure_basetarget(int(obj_id), name_for_bt, ra_for_bt, dec_for_bt, fiber_meta=meta)
                     except Exception as e:
                         self.logger.debug(f"Ensure BaseTarget failed for {obj_id}: {e}")
 
@@ -583,20 +584,57 @@ class DataIngestion(Module):
             return '{}'
         return 'UNKNOWN'
 
-    def _ensure_basetarget(self, tides_id: int, name: str, ra: Optional[float], dec: Optional[float]):
+    def _ensure_basetarget(self, tides_id: int, name: str, ra: Optional[float], dec: Optional[float], fiber_meta=None):
         """
-        Upsert into tom_targets_basetarget so tidestom can use TEMP/real IDs downstream.
-        Fills required NOT NULL columns with placeholders if necessary.
+        Upsert into tom_targets_basetarget. If RA/DEC are missing in basetarget:
+          - try to get them from tides_master by tides_id,
+          - else from spectrum fiber meta (OBJ_RA/OBJ_DEC),
+        then write them. Do not override existing RA/DEC.
         """
         conn = self.connect_to_db()  # tidestom
         if not conn:
             return
         try:
             with conn:
+                # Check existing RA/DEC
+                existing_ra = None
+                existing_dec = None
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT ra, dec FROM tom_targets_basetarget WHERE id = %s", (int(tides_id),))
+                        r = cur.fetchone()
+                        if r:
+                            existing_ra, existing_dec = r[0], r[1]
+                except Exception as e:
+                    self.logger.debug(f"Fetch existing BaseTarget coords failed for {tides_id}: {e}")
+
+                # Decide what RA/DEC to write only if currently missing
+                ra_to_write = None if existing_ra is not None else (float(ra) if ra is not None else None)
+                dec_to_write = None if existing_dec is not None else (float(dec) if dec is not None else None)
+
+                # If still missing, try tides_master by tides_id
+                if ra_to_write is None or dec_to_write is None:
+                    m = self._query_tides_master_by_tides_id(int(tides_id))
+                    if m:
+                        if ra_to_write is None and m.get('ra') is not None:
+                            try: ra_to_write = float(m['ra'])
+                            except Exception: pass
+                        if dec_to_write is None and m.get('dec') is not None:
+                            try: dec_to_write = float(m['dec'])
+                            except Exception: pass
+
+                # If still missing, use spectrum fiber meta OBJ_RA/OBJ_DEC
+                if (ra_to_write is None or dec_to_write is None) and fiber_meta is not None:
+                    ra_s, dec_s = self._extract_coords_from_meta(fiber_meta)
+                    if ra_to_write is None and ra_s is not None:
+                        ra_to_write = float(ra_s)
+                    if dec_to_write is None and dec_s is not None:
+                        dec_to_write = float(dec_s)
+
+                # Build dynamic upsert (include ra/dec only when we have values to fill)
                 cols_info = self._get_table_columns(conn, 'tom_targets_basetarget')
                 cols = []
                 vals = []
-                # Core fields
                 if 'id' in cols_info:
                     cols.append('id'); vals.append(int(tides_id))
                 if 'name' in cols_info:
@@ -609,13 +647,11 @@ class DataIngestion(Module):
                     cols.append('created'); vals.append(datetime.now())
                 if 'modified' in cols_info:
                     cols.append('modified'); vals.append(datetime.now())
-                # Coords
-                if 'ra' in cols_info and ra is not None:
-                    cols.append('ra'); vals.append(float(ra))
-                if 'dec' in cols_info and dec is not None:
-                    cols.append('dec'); vals.append(float(dec))
+                if 'ra' in cols_info and ra_to_write is not None:
+                    cols.append('ra'); vals.append(float(ra_to_write))
+                if 'dec' in cols_info and dec_to_write is not None:
+                    cols.append('dec'); vals.append(float(dec_to_write))
 
-                # Ensure NOT NULL columns are present
                 required_missing = [
                     c for c, meta in cols_info.items()
                     if not meta['nullable'] and meta['default'] is None and c not in cols
@@ -623,7 +659,6 @@ class DataIngestion(Module):
                 for c in required_missing:
                     cols.append(c); vals.append(self._placeholder_for(cols_info[c]))
 
-                # Build UPSERT
                 set_clause = ", ".join(f"{c}=EXCLUDED.{c}" for c in cols if c != 'id')
                 placeholders = ",".join(["%s"] * len(vals))
                 sql = f"INSERT INTO tom_targets_basetarget ({', '.join(cols)}) VALUES ({placeholders}) " \
@@ -703,6 +738,28 @@ class DataIngestion(Module):
                 return None
         except Exception as e:
             self.logger.debug(f"tides_master coords lookup failed: {e}")
+            return None
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _query_tides_master_by_tides_id(self, tides_id: int) -> Optional[Dict[str, Any]]:
+        """Query tides_master by tides_id to get name/ra/dec."""
+        tides_db_name = os.getenv('TIDES_DB_NAME') or 'tides'
+        conn = self.connect_to_db(db_name=tides_db_name)
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT tides_id, name, ra, dec FROM tides_master WHERE tides_id = %s LIMIT 1", (int(tides_id),))
+                row = cur.fetchone()
+                if row:
+                    return {'tides_id': row[0], 'name': row[1], 'ra': row[2], 'dec': row[3]}
+                return None
+        except Exception as e:
+            self.logger.debug(f"tides_master by tides_id lookup failed: {e}")
             return None
         finally:
             try:
