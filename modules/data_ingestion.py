@@ -235,11 +235,6 @@ class DataIngestion(Module):
                         continue
                     obj_names.append(str(obj_id))
 
-                    # Ensure tides_cand contains tides_id; insert if missing (tidestom DB)
-                    try:
-                        self._ensure_tides_cand(int(obj_id))
-                    except Exception as e:
-                        self.logger.warning(f"Failed to ensure tides_cand({obj_id}): {e}")
 
                     # Filepaths use the tides_id (OBJ_NME)
                     spectrum_file = os.path.join(spectra_night_dir, f"{obj_id}_spectrum.txt")
@@ -352,12 +347,36 @@ class DataIngestion(Module):
                     else:
                         # Try to extract RA/Dec directly from the fiber metadata row
                         ra_for_bt, dec_for_bt = self._extract_coords_from_meta(meta)
+                        # If master lookup by IDs failed, try matching tides_master by coordinates (tolerance 2")
+                        if ra_for_bt is not None and dec_for_bt is not None:
+                            master_by_coords = self._query_tides_master_by_coords(ra_for_bt, dec_for_bt, tolerance_arcsec=2.0)
+                            if master_by_coords:
+                                metadata.update({
+                                    'TARGET_NAME': master_by_coords.get('name'),
+                                    'RA': master_by_coords.get('ra'),
+                                    'DEC': master_by_coords.get('dec')
+                                })
+                                name_for_bt = master_by_coords.get('name')
+                                ra_for_bt = master_by_coords.get('ra')
+                                dec_for_bt = master_by_coords.get('dec')
+                                # Prefer tides_id from master coordinate match when current is TEMP
+                                try:
+                                    if self._last_was_temp and isinstance(master_by_coords.get('tides_id'), (int, np.integer)):
+                                        obj_id = int(master_by_coords['tides_id'])
+                                except Exception:
+                                    pass
                     if not name_for_bt:
                         name_for_bt = f"TEMP-{obj_id}"
                     try:
                         self._ensure_basetarget(int(obj_id), name_for_bt, ra_for_bt, dec_for_bt)
                     except Exception as e:
                         self.logger.debug(f"Ensure BaseTarget failed for {obj_id}: {e}")
+
+                    # Ensure tides_cand contains tides_id; insert/update with name if available (tidestom DB)
+                    try:
+                        self._ensure_tides_cand(int(obj_id), name_for_bt)
+                    except Exception as e:
+                        self.logger.warning(f"Failed to ensure tides_cand({obj_id}): {e}")
 
                     # Update tides_spec with metadata (stores thumbnail path in additional_info)
                     self.update_tides_spec(str(obj_id), metadata, spectrum_file, thumbnail_file)
@@ -455,7 +474,9 @@ class DataIngestion(Module):
         return self._next_temp_id()
 
     def _extract_coords_from_meta(self, row) -> tuple[Optional[float], Optional[float]]:
-        """Attempt to read RA/Dec (degrees) from the fiber metadata row."""
+        """Attempt to read RA/Dec (degrees) from the fiber metadata row.
+        Prefer FIBINFO's OBJ_RA/OBJ_DEC when present, then fall back to other common names.
+        """
         def _get_any(r, candidates):
             names_l = {n.lower(): n for n in getattr(r, 'names', [])}
             for cand in candidates:
@@ -467,10 +488,12 @@ class DataIngestion(Module):
                         continue
             return None
         ra_raw = _get_any(row, [
-            'ra','ra_deg','ra_degree','ra2000','alpha_j2000','ra_obj','obj_ra','ra_mean','ra_deg_j2000'
+            'obj_ra','ra_obj',
+            'ra','ra_deg','ra_degree','ra2000','alpha_j2000','ra_mean','ra_deg_j2000'
         ])
         dec_raw = _get_any(row, [
-            'dec','dec_deg','dec_degree','dec2000','delta_j2000','dec_obj','obj_dec','dec_mean','dec_deg_j2000'
+            'obj_dec','dec_obj',
+            'dec','dec_deg','dec_degree','dec2000','delta_j2000','dec_mean','dec_deg_j2000'
         ])
         ra_val = None
         dec_val = None
@@ -618,18 +641,72 @@ class DataIngestion(Module):
             except Exception:
                 pass
 
-    def _ensure_tides_cand(self, tides_id: int):
-        """Insert tides_id into tidestom.tides_cand if missing."""
+    def _query_tides_master_by_coords(self, ra: float, dec: float, tolerance_arcsec: float = 1.0) -> Optional[Dict[str, Any]]:
+        """
+        Fallback: query tides_master by coordinates within a small angular tolerance.
+        Returns dict with keys: tides_id, name, ra, dec when found, else None.
+        """
+        if ra is None or dec is None:
+            return None
+        tol_deg = float(tolerance_arcsec) / 3600.0
+        tides_db_name = os.getenv('TIDES_DB_NAME') or 'tides'
+        conn = self.connect_to_db(db_name=tides_db_name)
+        if not conn:
+            return None
+        try:
+            sql = (
+                "SELECT tides_id, name, ra, dec FROM tides_master "
+                "WHERE ABS(ra - %s) <= %s AND ABS(dec - %s) <= %s "
+                "ORDER BY ABS(ra - %s) + ABS(dec - %s) ASC LIMIT 1"
+            )
+            params = (float(ra), tol_deg, float(dec), tol_deg, float(ra), float(dec))
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                row = cur.fetchone()
+                if row:
+                    return { 'tides_id': row[0], 'name': row[1], 'ra': row[2], 'dec': row[3] }
+                return None
+        except Exception as e:
+            self.logger.debug(f"tides_master coords lookup failed: {e}")
+            return None
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _ensure_tides_cand(self, tides_id: int, name: Optional[str] = None):
+        """Insert tides_id into tidestom.tides_cand if missing; upsert name if column exists."""
         conn = self.connect_to_db()  # default DB (tidestom)
         if not conn:
             return
         try:
             with conn:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT 1 FROM tides_cand WHERE tides_id = %s", (int(tides_id),))
-                    if cur.fetchone():
-                        return
-                    cur.execute("INSERT INTO tides_cand (tides_id) VALUES (%s) ON CONFLICT (tides_id) DO NOTHING", (int(tides_id),))
+                    # Discover if 'name' column exists
+                    has_name = False
+                    try:
+                        cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='tides_cand' AND column_name='name'")
+                        has_name = bool(cur.fetchone())
+                    except Exception:
+                        has_name = False
+
+                    # Upsert with/without name
+                    if has_name and name is not None:
+                        cur.execute(
+                            """
+                            INSERT INTO tides_cand (tides_id, name)
+                            VALUES (%s, %s)
+                            ON CONFLICT (tides_id)
+                            DO UPDATE SET name = EXCLUDED.name
+                            """,
+                            (int(tides_id), str(name))
+                        )
+                    else:
+                        cur.execute(
+                            "INSERT INTO tides_cand (tides_id) VALUES (%s) ON CONFLICT (tides_id) DO NOTHING",
+                            (int(tides_id),)
+                        )
         finally:
             try:
                 conn.close()
