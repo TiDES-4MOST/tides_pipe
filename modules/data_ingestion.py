@@ -362,6 +362,17 @@ class DataIngestion(Module):
                         name_for_bt = master_info.get('name')
                         ra_for_bt = master_info.get('ra')
                         dec_for_bt = master_info.get('dec')
+                        # If master lacks RA/Dec, fill from spectrum without overriding master values
+                        if ra_for_bt is None or dec_for_bt is None:
+                            ra_s, dec_s = self._extract_coords_from_meta(meta)
+                            if ra_for_bt is None and ra_s is not None:
+                                ra_for_bt = ra_s
+                                if metadata.get('RA') is None:
+                                    metadata['RA'] = ra_s
+                            if dec_for_bt is None and dec_s is not None:
+                                dec_for_bt = dec_s
+                                if metadata.get('DEC') is None:
+                                    metadata['DEC'] = dec_s
                     else:
                         # Try to extract RA/Dec directly from the fiber metadata row
                         ra_for_bt, dec_for_bt = self._extract_coords_from_meta(meta)
