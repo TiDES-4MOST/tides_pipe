@@ -27,6 +27,20 @@ class DataIngestion(Module):
         self._temp_prefix = None
         self._temp_counter = 0
         self._last_was_temp = False
+        # Control whether unresolved IDs fall back to TEMP IDs. Default: allowed (no dev special-case).
+        def _as_bool(v, default=True):
+            if v is None:
+                return default
+            s = str(v).strip().lower()
+            if s in ("1", "true", "yes", "on"):
+                return True
+            if s in ("0", "false", "no", "off"):
+                return False
+            return default
+        env_allow_temp = os.getenv('INGEST_ALLOW_TEMP')
+        cfg_allow_temp = ((self.config.get('data_ingestion') or {}).get('allow_temp'))
+        # ENV overrides config; default True to keep environments consistent unless explicitly disabled
+        self._allow_temp = _as_bool(env_allow_temp if env_allow_temp is not None else cfg_allow_temp, True)
 
     @staticmethod
     def _json_default(o):
@@ -411,6 +425,7 @@ class DataIngestion(Module):
           1) If FIBMETATAB.OBJ_NME parses to int and exists in tidestom.tides_cand -> use it.
           2) Else, use OSTD/4MOST IDs from the MEC row and query tides.tides_master.
              If only OSTD IDs available, map via Transients API to 4MOST ID and then master.
+             Note: FIBMETATAB may name the OSTD U object id as OBJ_UID; this maps to tides_master.ostd_u_obj_id.
           3) If all mapping fails, return a TEMP id for the night: <YYYYMMDD>_<n>.
         """
         self._last_was_temp = False
@@ -435,7 +450,8 @@ class DataIngestion(Module):
                         continue
             return None
 
-        ostd_u_obj = _get_any(meta_row, ['ostd_u_obj_id', 'ostd_uobj_id', 'u_obj_id'])
+        # Accept OBJ_UID as the U object id (maps to tides_master.ostd_u_obj_id)
+        ostd_u_obj = _get_any(meta_row, ['ostd_u_obj_id', 'ostd_uobj_id', 'u_obj_id', 'obj_uid'])
         ostd_targ  = _get_any(meta_row, ['ostd_targ_id', 'ostd_target_id', 'targ_id'])
         pk_4most   = _get_any(meta_row, ['pk_4most', 'fourmost_id', '4most_id', 'pk_4m'])
 
@@ -469,9 +485,13 @@ class DataIngestion(Module):
                 except Exception as e:
                     self.logger.debug(f"Transients API mapping failed: {e}")
 
-        # 3) TEMP fallback when no resolution was possible
-        self._last_was_temp = True
-        return self._next_temp_id()
+        # 3) TEMP fallback when no resolution was possible (honor allow_temp switch)
+        if self._allow_temp:
+            self._last_was_temp = True
+            return self._next_temp_id()
+        # If TEMP is not allowed, skip this spectrum by returning None
+        self._last_was_temp = False
+        return None
 
     def _extract_coords_from_meta(self, row) -> tuple[Optional[float], Optional[float]]:
         """Attempt to read RA/Dec (degrees) from the fiber metadata row.
@@ -727,7 +747,8 @@ class DataIngestion(Module):
             return None
         return self._query_tides_master(
             pk_4most=_get_any(meta_row, ['pk_4most', 'fourmost_id', '4most_id']),
-            ostd_u_obj_id=_get_any(meta_row, ['ostd_u_obj_id', 'ostd_uobj_id', 'u_obj_id']),
+            # Accept OBJ_UID here as well
+            ostd_u_obj_id=_get_any(meta_row, ['ostd_u_obj_id', 'ostd_uobj_id', 'u_obj_id', 'obj_uid']),
             ostd_targ_id=_get_any(meta_row, ['ostd_targ_id', 'ostd_target_id', 'targ_id'])
         )
 
@@ -816,7 +837,8 @@ class DataIngestion(Module):
                 with conn:
                     with conn.cursor() as cur:
                         # Adjust table/columns if your schema differs
-                        cur.execute("""
+                        cur.execute(
+                            """
                             CREATE TABLE IF NOT EXISTS tides_spec (
                                 tides_id    TEXT PRIMARY KEY,
                                 spec_path   TEXT NOT NULL,
@@ -824,8 +846,10 @@ class DataIngestion(Module):
                                 meta        JSONB,
                                 updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
                             );
-                        """)
-                        cur.execute("""
+                            """
+                        )
+                        cur.execute(
+                            """
                             INSERT INTO tides_spec (tides_id, spec_path, thumb_path, meta)
                             VALUES (%s, %s, %s, %s)
                             ON CONFLICT (tides_id)
@@ -834,19 +858,97 @@ class DataIngestion(Module):
                                 thumb_path = EXCLUDED.thumb_path,
                                 meta = EXCLUDED.meta,
                                 updated_at = NOW();
-                        """, (str(tides_id), spectrum_file, thumbnail_file, json.dumps(metadata)))
+                            """,
+                            (str(tides_id), spectrum_file, thumbnail_file, json.dumps(metadata))
+                        )
                 if hasattr(self, "logger"):
                     self.logger.info(f"[ingestion] Saved tides_spec for {tides_id}")
                 return
             except Exception as e:
                 if hasattr(self, "logger"):
                     self.logger.warning(f"[ingestion] dbutil save failed; falling back: {e}")
-                # fall through to your existing implementation
+                # fall through to legacy implementation below
 
-        # ...existing code...
-        # Your original DB persistence logic goes here unchanged
-        # e.g. psycopg connect/execute or ORM call
-        # self._legacy_update_tides_spec(tides_id, metadata, spectrum_file, thumbnail_file)
+        # Fallback: use module's DB connector (tidestom) to upsert tides_spec
+        legacy = self.connect_to_db()
+        if not legacy:
+            if hasattr(self, "logger"):
+                self.logger.error("[ingestion] No DB connection available for tides_spec upsert")
+            return
+        try:
+            with legacy:
+                with legacy.cursor() as cur:
+                    # Create table if missing; prefer JSONB when available, else TEXT
+                    try:
+                        cur.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS tides_spec (
+                                tides_id    TEXT PRIMARY KEY,
+                                spec_path   TEXT NOT NULL,
+                                thumb_path  TEXT,
+                                meta        JSONB,
+                                updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                            );
+                            """
+                        )
+                        meta_value = json.dumps(metadata)
+                        updated_value = "NOW()"
+                        # Use a parameterized updated_at for compatibility when not Postgres below
+                    except Exception:
+                        legacy.rollback()
+                        cur.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS tides_spec (
+                                tides_id    TEXT PRIMARY KEY,
+                                spec_path   TEXT NOT NULL,
+                                thumb_path  TEXT,
+                                meta        TEXT,
+                                updated_at  TEXT NOT NULL
+                            );
+                            """
+                        )
+                        meta_value = json.dumps(metadata)
+                        # For non-Postgres, store ISO string for updated_at
+                        cur.execute(
+                            """
+                            INSERT INTO tides_spec (tides_id, spec_path, thumb_path, meta, updated_at)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT (tides_id)
+                            DO UPDATE SET
+                                spec_path = EXCLUDED.spec_path,
+                                thumb_path = EXCLUDED.thumb_path,
+                                meta = EXCLUDED.meta,
+                                updated_at = EXCLUDED.updated_at;
+                            """,
+                            (str(tides_id), spectrum_file, thumbnail_file, meta_value, datetime.now().isoformat())
+                        )
+                        if hasattr(self, "logger"):
+                            self.logger.info(f"[ingestion] Saved tides_spec (legacy) for {tides_id}")
+                        return
+                    # Postgres path (JSONB + NOW())
+                    cur.execute(
+                        """
+                        INSERT INTO tides_spec (tides_id, spec_path, thumb_path, meta)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (tides_id)
+                        DO UPDATE SET
+                            spec_path = EXCLUDED.spec_path,
+                            thumb_path = EXCLUDED.thumb_path,
+                            meta = EXCLUDED.meta,
+                            updated_at = NOW();
+                        """,
+                        (str(tides_id), spectrum_file, thumbnail_file, meta_value)
+                    )
+            if hasattr(self, "logger"):
+                self.logger.info(f"[ingestion] Saved tides_spec (legacy) for {tides_id}")
+        except Exception as e:
+            if hasattr(self, "logger"):
+                self.logger.error(f"[ingestion] Legacy tides_spec upsert failed: {e}")
+        finally:
+            try:
+                legacy.close()
+            except Exception:
+                pass
 
     def archive_files(self, night_dir, archive_night_dir):
         if not os.path.exists(archive_night_dir):
