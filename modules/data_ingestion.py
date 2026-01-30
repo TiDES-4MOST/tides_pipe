@@ -510,40 +510,38 @@ class DataIngestion(Module):
         return None
 
     def _extract_coords_from_meta(self, row) -> tuple[Optional[float], Optional[float]]:
-        """Attempt to read RA/Dec (degrees) from the fiber metadata row.
-        Prefer FIBINFO's OBJ_RA/OBJ_DEC when present, then fall back to other common names.
-        """
-        def _get_any(r, candidates):
-            names_l = {n.lower(): n for n in getattr(r, 'names', [])}
-            for cand in candidates:
-                k = names_l.get(cand.lower())
-                if k is not None:
-                    try:
-                        return r[k]
-                    except Exception:
-                        continue
-            return None
-        ra_raw = _get_any(row, [
-            'obj_ra','ra_obj',
-            'ra','ra_deg','ra_degree','ra2000','alpha_j2000','ra_mean','ra_deg_j2000'
-        ])
-        dec_raw = _get_any(row, [
-            'obj_dec','dec_obj',
-            'dec','dec_deg','dec_degree','dec2000','delta_j2000','dec_mean','dec_deg_j2000'
-        ])
-        ra_val = None
-        dec_val = None
+        """Read RA/Dec (degrees) directly from FIBMETATAB: OBJ_RA and OBJ_DEC."""
+        ra_raw = None
+        dec_raw = None
         try:
-            if ra_raw is not None:
-                r = float(ra_raw)
-                ra_val = r * 15.0 if 0.0 <= r <= 24.0 else r
+            ra_raw = row['OBJ_RA']
         except Exception:
             pass
         try:
-            if dec_raw is not None:
-                dec_val = float(dec_raw)
+            dec_raw = row['OBJ_DEC']
         except Exception:
             pass
+
+        if isinstance(ra_raw, (bytes, bytearray)):
+            try:
+                ra_raw = ra_raw.decode('ascii', errors='ignore')
+            except Exception:
+                ra_raw = None
+        if isinstance(dec_raw, (bytes, bytearray)):
+            try:
+                dec_raw = dec_raw.decode('ascii', errors='ignore')
+            except Exception:
+                dec_raw = None
+
+        try:
+            ra_val = float(ra_raw) if ra_raw is not None else None
+        except Exception:
+            ra_val = None
+        try:
+            dec_val = float(dec_raw) if dec_raw is not None else None
+        except Exception:
+            dec_val = None
+
         return ra_val, dec_val
 
     def _get_table_columns(self, conn, table_name: str) -> Dict[str, Dict[str, Any]]:
