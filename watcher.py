@@ -2,6 +2,7 @@ import os, time, re, httpx, sys, logging
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
+from tides_pipe.utils.slack import send_slack_message
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -78,6 +79,10 @@ class MECHandler(FileSystemEventHandler):
                 r = httpx.post(f"{PIPELINE_API}/ingest", json={"env": env, "night": night}, timeout=30)
                 r.raise_for_status()
                 logging.info("Ingestion triggered for env %s night %s: %s", env, night, r.json())
+                # Notify Slack that new data appeared and ingestion was triggered
+                send_slack_message(
+                    text=f":eyes: New data detected (env={env}, night={night}). Ingestion triggered."
+                )
             except Exception as e:
                 logging.exception("Failed to trigger ingestion for env %s night %s: %s", env, night, e)
             finally:

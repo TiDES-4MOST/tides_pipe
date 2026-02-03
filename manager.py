@@ -15,6 +15,7 @@ import time
 from tides_pipe.modules.classifiers.snid_handler import SnidHandler
 from tides_pipe.modules.classifiers.snid_defaults import snid_params_from_config
 from tides_pipe.utils.paths import spectra_night_dir as util_spectra_night_dir, spectrum_path as util_spectrum_path
+from tides_pipe.utils.slack import send_slack_message
 
 # Optional DB/status helpers (don’t break if missing)
 try:
@@ -465,14 +466,27 @@ class PipelineManager:
                 # ...rest of loop unchanged...
 
             for step in self.steps:
-                # ...existing step handling...
-                pass  # (keep existing code)
+                # Placeholder for additional step handling retained
+                pass
             # After processing all steps:
             if all_done:
                 logger.info("All steps completed; exiting manager loop.")
+                # Notify Slack on pipeline completion
+                try:
+                    send_slack_message(
+                        text=f":white_check_mark: Pipeline complete for night={self.current_night or night} (env={env}). Data ready for inspection."
+                    )
+                except Exception:
+                    logger.debug("Slack notification failed (completion).", exc_info=True)
                 break
             if all(self.check_module_done(s["name"]) for s in self.steps):
                 logger.info("All steps reported DONE; stopping loop.")
+                try:
+                    send_slack_message(
+                        text=f":white_check_mark: Pipeline complete for night={self.current_night or night} (env={env}). Data ready for inspection."
+                    )
+                except Exception:
+                    logger.debug("Slack notification failed (reported DONE).", exc_info=True)
                 break
             if one_shot:
                 logger.info("one_shot=True; stopping after single iteration.")

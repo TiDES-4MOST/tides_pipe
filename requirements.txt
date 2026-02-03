@@ -8,3 +8,4 @@ pyyaml
 pandas
 matplotlib
 requests
+slack_sdk

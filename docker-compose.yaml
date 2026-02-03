@@ -13,6 +13,7 @@ services:
       DB_NAME: ${DB_NAME}
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
       DB_SSLMODE: ${DB_SSLMODE:-prefer}
       SNID_API_URL: http://192.168.10.117:8000
       NGSF_API_URL: http://192.168.10.117:8001
