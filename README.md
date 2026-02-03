@@ -204,24 +204,6 @@ Override endpoints with CLASSIFIER_SNID_ENDPOINT and CLASSIFIER_NGSF_ENDPOINT if
 
 ---
 
-## Slack Notifications
-
-- Optional: set `SLACK_WEBHOOK_URL` (or `TIDES_SLACK_WEBHOOK_URL`) to enable simple Slack pings.
-- Events sent:
-  - New data detected by watcher: ":eyes: New data detected (env=..., night=...). Ingestion triggered."
-  - Pipeline completion by manager: ":white_check_mark: Pipeline complete for night=... (env=...). Data ready for inspection."
-
-Example (Docker Compose):
-
-```env
-# .env
-SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX
-```
-
-Security tip: Prefer storing the webhook URL in your deployment secret store or as a Compose secret.
-
----
-
 ## TOM integration
 
 - Easiest: TOM reads pipeline status and classifications from the same Postgres.
@@ -234,7 +216,6 @@ Security tip: Prefer storing the webhook URL in your deployment secret store or 
 - Logs to stdout (visible via docker logs) and to files under LOG_DIR (default /data/logs or config.log_dir).
 - Set LOG_LEVEL=DEBUG for verbose output.
 
----
 
 ## Troubleshooting
 
