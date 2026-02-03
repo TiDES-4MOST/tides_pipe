@@ -41,8 +41,8 @@ services:
   watcher:
     build:
       context: .
-      dockerfile: ./Dockerfile.watcher
-    command: ["python", "-u", "/app/watcher.py"]
+      dockerfile: ./Dockerfile
+    command: ["python", "-u", "-m", "tides_pipe.watcher"]
     environment:
       DELIVERIES_DIR: /data/deliveries
       PIPELINE_API: http://pipeline:8001

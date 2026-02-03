@@ -1,7 +1,19 @@
 FROM python:3.11-slim
 WORKDIR /app
-RUN pip install watchdog httpx
-COPY watcher.py /app/watcher.py
+
+# Install full project requirements so shared utils (e.g., slack_sdk) are available
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# Copy entire tides_pipe codebase so package imports resolve
+COPY . /app/tides_pipe
+
+# Ensure Python can import the package at /app/tides_pipe
+ENV PYTHONPATH=/app
+
 ENV DELIVERIES_DIR=/data/deliveries
 ENV PIPELINE_API=http://pipeline:8001
-CMD ["python", "/app/watcher.py"]
+ENV PYTHONUNBUFFERED=1
+
+# Run watcher as a module within the package context
+CMD ["python", "-u", "-m", "tides_pipe.watcher"]

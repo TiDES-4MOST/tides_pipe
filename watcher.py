@@ -2,7 +2,16 @@ import os, time, re, httpx, sys, logging
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
-from utils.slack import send_slack_message
+
+# Robust import for Slack helper: prefer package path, fallback to local utils, else no-op
+try:
+    from tides_pipe.utils.slack import send_slack_message
+except Exception:
+    try:
+        from utils.slack import send_slack_message
+    except Exception:
+        def send_slack_message(text: str, **kwargs):
+            return False
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
