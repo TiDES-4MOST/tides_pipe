@@ -2,7 +2,7 @@ import os, time, re, httpx, sys, logging
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
-from tides_pipe.utils.slack import send_slack_message
+from utils.slack import send_slack_message
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
