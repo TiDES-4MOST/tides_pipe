@@ -60,15 +60,49 @@ class MECHandler(FileSystemEventHandler):
         # Key is now (env, night) tuple
         self._pending = {}
 
+    def _schedule_dir(self, dir_path: str):
+        """Scan a directory tree for .fits files and schedule by (env, night).
+        Useful when a new night directory appears via create or move with files pre-populated.
+        """
+        try:
+            if not os.path.isdir(dir_path):
+                return
+            for root, _, files in os.walk(dir_path):
+                for fname in files:
+                    fpath = os.path.join(root, fname)
+                    if PATTERN.match(fpath):
+                        self._schedule(fpath)
+        except Exception:
+            logging.exception("Failed scanning directory %s", dir_path)
+
     def on_created(self, event):
-        if not event.is_directory and PATTERN.match(event.src_path):
-            logger.info(f"File created: {event.src_path}")
-            self._schedule(event.src_path)
+        if event.is_directory:
+            # New night directory created; scan for existing files
+            logger.info(f"Directory created: {event.src_path}")
+            self._schedule_dir(event.src_path)
+        else:
+            if PATTERN.match(event.src_path):
+                logger.info(f"File created: {event.src_path}")
+                self._schedule(event.src_path)
 
     def on_modified(self, event):
         if not event.is_directory and PATTERN.match(event.src_path):
             logger.info(f"File modified: {event.src_path}")
             self._schedule(event.src_path)
+
+    def on_moved(self, event):
+        # Handle directories or files moved into deliveries (common for atomic writes)
+        try:
+            if event.is_directory:
+                logger.info(f"Directory moved: {getattr(event, 'dest_path', event.src_path)}")
+                self._schedule_dir(getattr(event, 'dest_path', event.src_path))
+            else:
+                dest = getattr(event, 'dest_path', event.src_path)
+                if PATTERN.match(dest):
+                    logger.info(f"File moved: {dest}")
+                    self._schedule(dest)
+        except Exception:
+            logging.exception("Error handling move event: %s", event)
 
     def _schedule(self, path: str):
         env, n = info_from_path(path)
