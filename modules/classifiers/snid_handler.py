@@ -12,7 +12,8 @@ try:
 except Exception:
     h5py = None
 
-from tides_pipe.modules.classifiers.classification_store import save_result
+# Avoid external store to keep a single unified DB write here
+# from tides_pipe.modules.classifiers.classification_store import save_result
 from tides_pipe.modules.classifiers.snid_defaults import snid_params_from_config
 try:
     from tides_pipe.utils import db as dbutil  # provides load_creds/connect
@@ -189,6 +190,31 @@ class SnidHandler:
             self.log.warning(f"[snid] DB connect failed; results will not be saved to DB: {e}")
             return None
 
+    def _resolve_tides_specid(self, spectrum_path: str, tides_id: Union[str, int], night: str) -> Optional[int]:
+        """Try to resolve per-spectrum id from tides_spec.additional_info, else create a stable fallback.
+        """
+        conn = self._db_connect()
+        if conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT (additional_info ->> 'TIDES_SPECID')::bigint
+                        FROM tides_spec
+                        WHERE filepath = %s
+                        LIMIT 1
+                    """, (spectrum_path,))
+                    row = cur.fetchone()
+                    if row and row[0] is not None:
+                        return int(row[0])
+            except Exception as e:
+                self.log.debug(f"[snid] tides_specid lookup failed: {e}")
+        try:
+            import zlib
+            base = f"{tides_id}|{night}|{os.path.basename(spectrum_path)}"
+            return int(zlib.crc32(base.encode('utf-8')) & 0x7FFFFFFF)
+        except Exception:
+            return None
+
     def _save_result_db(self, tides_id: str, night: str, result: Dict[str, Any], api_resp: Dict[str, Any] | None):
         conn = self._db_connect()
         if not conn:
@@ -235,57 +261,90 @@ class SnidHandler:
         except Exception as e:
             self.log.warning(f"[snid] Failed to save result to DB: {e}")
 
-    def _save_result_db_minimal(self, tides_id: str, night: str, result: Dict[str, Any]):
+    def _save_result_unified(self, tides_id: str, tides_specid: Optional[int], night: str, result: Dict[str, Any], api_resp: Dict[str, Any] | None):
+        """Unified per-spectrum classification write.
+        Attempts per-spectrum upsert using tides_specid when available, while preserving tides_id for legacy.
         """
-        Minimal write into existing table:
-        pipeline_classification_snid(tides_id, sn_type, probability, version)
-        probability := rlap (float) or NULL
-        version := result.get('version') or params version or empty string
-        """
-        self.log.info(f"[snid] _save_result_db_minimal for tides_id={tides_id}, result={result}")
         conn = self._db_connect()
         if not conn:
             return
-        try:
-            data = result.get('data', {})
-            best = data.get('table', [])[0]
-        except Exception as e:
-            self.log.warning(f"[snid] Minimal DB write failed: {e}")
-            return
-
-        sn_type = best.get('typing')
-
-        # rlap may be array / list / scalar
-        rlap = best.get('rlap')
+        # Extract classification fields
+        sn_type = (
+            result.get('verdict') or
+            ((api_resp or {}).get('data') or {}).get('table', [{}])[0].get('typing')
+        )
+        # rlap
+        rlap = result.get('rlap')
+        if rlap is None:
+            try:
+                rlap = ((api_resp or {}).get('data') or {}).get('table', [{}])[0].get('rlap')
+            except Exception:
+                rlap = None
         if isinstance(rlap, (list, tuple)):
             rlap = rlap[0] if rlap else None
         try:
             rlap = float(rlap) if rlap is not None else None
         except Exception:
             rlap = None
+        # z and phase
+        def _as_float(x):
+            try:
+                return float(x) if x is not None else None
+            except Exception:
+                return None
+        z = _as_float(result.get('redshift'))
+        phase = _as_float(result.get('phase'))
+        version = ((self.config.get("snid") or {}).get("defaults") or {}).get("version") or ""
 
-        version = result.get("version")  # if future API provides it
-        if not version:
-            # Try config default
-            version = ((self.config.get("snid") or {}).get("defaults") or {}).get("version") or ""
+        # Try per-spectrum upsert first (if schema supports tides_specid)
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    if tides_specid is not None:
+                        cur.execute(
+                            """
+                            UPDATE pipeline_classification_snid
+                            SET tides_id = %s, sn_type = %s, probability = %s, version = %s, z = %s, phase = %s
+                            WHERE tides_specid = %s
+                            """,
+                            (int(tides_id), sn_type, rlap, version, z, phase, int(tides_specid))
+                        )
+                        if cur.rowcount == 0:
+                            cur.execute(
+                                """
+                                INSERT INTO pipeline_classification_snid (tides_specid, tides_id, sn_type, probability, version, z, phase)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                """,
+                                (int(tides_specid), int(tides_id), sn_type, rlap, version, z, phase)
+                            )
+                        self.log.info(f"[snid] Upserted per-spectrum classification (tides_specid={tides_specid}, tides_id={tides_id})")
+                        return
+        except Exception as e:
+            # Likely schema lacks tides_specid; fall back to tides_id-only write
+            self.log.debug(f"[snid] Per-spectrum upsert failed; falling back: {e}")
 
         try:
             with conn:
                 with conn.cursor() as cur:
-                    # Try update first (since table PK is id, we have no unique constraint on tides_id)
-                    cur.execute("""
+                    cur.execute(
+                        """
                         UPDATE pipeline_classification_snid
-                        SET sn_type = %s, probability = %s, version = %s
+                        SET sn_type = %s, probability = %s, version = %s, z = %s, phase = %s
                         WHERE tides_id = %s
-                    """, (sn_type, rlap, version, int(tides_id)))
+                        """,
+                        (sn_type, rlap, version, z, phase, int(tides_id))
+                    )
                     if cur.rowcount == 0:
-                        cur.execute("""
-                            INSERT INTO pipeline_classification_snid (tides_id, sn_type, probability, version)
-                            VALUES (%s, %s, %s, %s)
-                        """, (int(tides_id), sn_type, rlap, version))
-            self.log.info(f"[snid] Upserted minimal classification (tides_id={tides_id}, sn_type={sn_type}, rlap={rlap}, version='{version}')")
+                        cur.execute(
+                            """
+                            INSERT INTO pipeline_classification_snid (tides_id, sn_type, probability, version, z, phase)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            """,
+                            (int(tides_id), sn_type, rlap, version, z, phase)
+                        )
+            self.log.info(f"[snid] Upserted legacy classification (tides_id={tides_id})")
         except Exception as e:
-            self.log.warning(f"[snid] Minimal DB write failed: {e}")
+            self.log.warning(f"[snid] Unified DB write failed: {e}")
 
     def classify(
         self,
@@ -335,31 +394,12 @@ class SnidHandler:
             result.update(self._parse_hdf5(h5_path))
             self.log.info(f"[snid] Result file: {h5_path}")
 
+        # Unified per-spectrum DB write
         try:
-            save_result(
-                code="snid",
-                tides_id=str(tides_id),
-                night=str(night),
-                result=result,
-                result_path=(h5_path if result.get("status") == "ok" else None),
-            )
-        except TypeError:
-            try:
-                save_result("snid", str(tides_id), result)
-            except Exception as e:
-                self.log.warning(f"[snid] save_result failed: {e}")
+            tides_specid = self._resolve_tides_specid(spectrum_path, tides_id, night)
+            self._save_result_unified(str(tides_id), tides_specid, str(night), result, api_resp)
         except Exception as e:
-            self.log.warning(f"[snid] save_result failed: {e}")
-
-        # Also persist to DB (same pattern as ingestion)
-        #try:
-        #    self._save_result_db(str(tides_id), str(night), result, api_resp)
-        #except Exception as e:
-        #    self.log.warning(f"[snid] _save_result_db failed: {e}")
-        try:
-            self._save_result_db_minimal(str(tides_id), str(night), api_resp)
-        except Exception as e:
-            self.log.warning(f"[snid] _save_result_db_minimal failed: {e}")
+            self.log.warning(f"[snid] unified save failed: {e}")
 
         try:
             with open(os.path.join(out_dir, "done.txt"), "w") as f:
