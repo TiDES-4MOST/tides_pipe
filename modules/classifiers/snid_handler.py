@@ -191,14 +191,14 @@ class SnidHandler:
             return None
 
     def _resolve_tides_specid(self, spectrum_path: str, tides_id: Union[str, int], night: str) -> Optional[int]:
-        """Try to resolve per-spectrum id from tides_spec.additional_info, else create a stable fallback.
+        """Try to resolve per-spectrum id from tides_spec using tides_specid PK column.
         """
         conn = self._db_connect()
         if conn:
             try:
                 with conn.cursor() as cur:
                     cur.execute("""
-                        SELECT (additional_info ->> 'TIDES_SPECID')::bigint
+                        SELECT tides_specid
                         FROM tides_spec
                         WHERE filepath = %s
                         LIMIT 1
@@ -351,6 +351,7 @@ class SnidHandler:
         spectrum_path: str,
         night: Optional[str] = None,
         tides_id: Optional[Union[str, int]] = None,
+        tides_specid: Optional[int] = None,
         snid_params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if not night or not tides_id:
@@ -396,7 +397,9 @@ class SnidHandler:
 
         # Unified per-spectrum DB write
         try:
-            tides_specid = self._resolve_tides_specid(spectrum_path, tides_id, night)
+            # Use passed tides_specid or resolve it as fallback
+            if tides_specid is None:
+                tides_specid = self._resolve_tides_specid(spectrum_path, tides_id, night)
             self._save_result_unified(str(tides_id), tides_specid, str(night), result, api_resp)
         except Exception as e:
             self.log.warning(f"[snid] unified save failed: {e}")

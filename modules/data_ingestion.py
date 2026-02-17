@@ -178,7 +178,7 @@ class DataIngestion(Module):
     def process_file(self, file_path, spectra_night_dir, max_spectra: int | None = None):
         self.logger.info(f"Parsing data from {file_path}")
         env = self.config.get("env", "operations")
-        obj_names = []
+        obj_results = []  # List of {tides_id, tides_specid, filepath}
 
         # Always parse FITS file contents
         with fits.open(file_path, memmap=False) as hdulist:
@@ -417,7 +417,6 @@ class DataIngestion(Module):
                         # Stack multiple spectra with same OBJ_UID
                         self.logger.info(f"Stacking {len(group)} spectra for OBJ_UID {grouping_key}")
                         obj_id = group[0]['tides_id']
-                        obj_names.append(str(obj_id))
                         
                         # Perform stacking
                         wavelengths = [s['wavelength'] for s in group]
@@ -469,11 +468,16 @@ class DataIngestion(Module):
                             stacked=True,
                             source_specuids=[s['specuid'] for s in group if s['specuid']]
                         )
+                        
+                        obj_results.append({
+                            'tides_id': obj_id,
+                            'tides_specid': tides_specid,
+                            'filepath': os.path.join(spectra_night_dir, f"{tides_specid}_spectrum.txt")
+                        })
                     else:
                         # Single spectrum - assign tides_specid and save
                         spec = group[0]
                         obj_id = spec['tides_id']
-                        obj_names.append(str(obj_id))
                         
                         # Assign tides_specid (prefer SPECUID from MEC)
                         if spec['specuid'] is not None:
@@ -505,10 +509,16 @@ class DataIngestion(Module):
                             source_specuids=None
                         )
                         
+                        obj_results.append({
+                            'tides_id': obj_id,
+                            'tides_specid': tides_specid,
+                            'filepath': os.path.join(spectra_night_dir, f"{tides_specid}_spectrum.txt")
+                        })
+                        
                 except Exception as e:
                     self.logger.error(f"Error processing group {grouping_key}: {e}")
         
-        return obj_names
+        return obj_results
 
     # --------- Spectrum saving helper ---------
     

@@ -14,6 +14,8 @@ import time
 
 from tides_pipe.modules.classifiers.snid_handler import SnidHandler
 from tides_pipe.modules.classifiers.snid_defaults import snid_params_from_config
+from tides_pipe.modules.classifiers.client import classify_snid_async, classify_ngsf_async
+from tides_pipe.modules.classifiers.classification_store import save_result
 from tides_pipe.utils.paths import spectra_night_dir as util_spectra_night_dir, spectrum_path as util_spectrum_path
 from tides_pipe.utils.slack import send_slack_message
 
@@ -87,7 +89,28 @@ class PipelineManager:
         # Status tracking
         self.current_night: str = ""
         self._status_conn = None
+        self._db_conn = None  # Reusable DB connection
         self.snid = SnidHandler()
+
+    def _get_db_connection(self):
+        """Get or create a reusable DB connection."""
+        if self._db_conn is None and dbutil:
+            try:
+                creds = dbutil.load_creds(self.config)
+                self._db_conn = dbutil.connect(creds)
+            except Exception:
+                pass
+        return self._db_conn
+    
+    def _close_db_connection(self):
+        """Close the DB connection if open."""
+        if self._db_conn:
+            try:
+                self._db_conn.close()
+            except Exception:
+                pass
+            finally:
+                self._db_conn = None
 
     def load_config(self):
         if not os.path.exists(self.config_path):
@@ -174,6 +197,35 @@ class PipelineManager:
     def _spectrum_path(self, tides_id: str | int) -> str:
         return util_spectrum_path(self.config, self.current_night, tides_id, ensure_dir=True)
 
+    def _update_status(self, state: str, message: str = "", **kwargs):
+        """Update pipeline status if status tracking is available."""
+        if self._status_conn and self.current_night and status_store:
+            try:
+                status_store.upsert_status(
+                    self._status_conn,
+                    self.current_night,
+                    state,
+                    message=message,
+                    **kwargs
+                )
+            except Exception:
+                pass
+    
+    def _add_status_event(self, module: str, level: str, message: str):
+        """Add a status event if status tracking is available."""
+        if self._status_conn and self.current_night and status_store:
+            try:
+                status_store.add_event(
+                    self._status_conn,
+                    self.current_night,
+                    module,
+                    level,
+                    message
+                )
+            except Exception:
+                pass
+
+    
     def _logs_dir(self) -> str:
         """
         Logs/DONE flags directory for current night:
@@ -204,51 +256,44 @@ class PipelineManager:
                 return f.read().strip().upper().startswith("TRUE")
         return False
 
-    async def _run_classifiers_api(self, obj_names: list[str | int], logger: logging.Logger, snid_params: dict | None = None, ngsf_params: dict | None = None):
+    async def _run_classifiers_api(self, obj_names: list[str | int], logger: logging.Logger, spectrum_map: dict, snid_params: dict | None = None, ngsf_params: dict | None = None):
         """
         Call classifier microservices (SNID/NGSF) via HTTP for each tides_id concurrently,
         then persist results to the remote DB.
         """
         logger.info(f"[classification_api] Starting classification for {len(obj_names or [])} objects")
         
-        # Open DB connection once
-        conn = None
-        try:
-            creds = dbutil.load_creds(self.config)
-            conn = dbutil.connect(creds)
-            logger.info(f"[classification_api] Database connection established")
-        except Exception as e:
-            logger.error(f"[classification_api] DB connection failed; will skip persistence: {e}")
+        conn = self._get_db_connection()
+        if not conn:
+            logger.error(f"[classification_api] DB connection failed; will skip persistence")
 
         async def tagged(method: str, tides_id: int, coro):
             res = await coro
             return method, tides_id, res
 
         tasks = []
-        logger.info(f"[classification_api] Looking for spectra in night directory: {self.current_night}")
-        logger.info(f"[classification_api] Config data_paths: {self.config.get('data_paths', {})}")
-        
-        # Get enabled classifiers from config
         classification_config = self.config.get('classification', {})
         enabled_classifiers = classification_config.get('enabled_classifiers', ['snid', 'ngsf'])
         logger.info(f"[classification_api] Enabled classifiers: {enabled_classifiers}")
         
         for tid in obj_names or []:
-            spath = self._spectrum_path(tid)
+            spec_info = spectrum_map.get(str(tid))
+            if not spec_info:
+                logger.warning(f"[classification_api] No spectrum info for {tid}")
+                continue
+            
+            spath = spec_info['filepath']
+            tides_specid = spec_info['tides_specid']
+            
             if not os.path.exists(spath):
                 logger.warning(f"[classification_api] Spectrum not found for {tid}: {spath}")
                 continue
-            logger.debug(f"[classification_api] Found spectrum for {tid}: {spath}")
-            tid_int = int(tid)
             
-            # Add tasks for enabled classifiers only
+            tid_int = int(tid)
             if 'snid' in enabled_classifiers:
                 tasks.append(tagged("snid", tid_int, classify_snid_async(tid_int, spath, snid_params or {})))
             if 'ngsf' in enabled_classifiers:
                 tasks.append(tagged("ngsf", tid_int, classify_ngsf_async(tid_int, spath, ngsf_params or {})))
-            # TODO: Add qxp when classify_qxp_async is implemented
-            # if 'qxp' in enabled_classifiers:
-            #     tasks.append(tagged("qxp", tid_int, classify_qxp_async(tid_int, spath, qxp_params or {})))
 
         classified_ok = 0
         ok = True
@@ -265,32 +310,17 @@ class PipelineManager:
                 ok = False
                 logger.error(f"[classification_api] Classifier call failed: {e}", exc_info=True)
         
-        # Update status after classification progress/completion
-        if self._status_conn and self.current_night:
-            try:
-                status_store.upsert_status(
-                    self._status_conn,
-                    self.current_night,
-                    "classifying",
-                    classified=classified_ok,
-                    message="Classification completed" if ok else "Classification completed with errors",
-                )
-                status_store.add_event(
-                    self._status_conn,
-                    self.current_night,
-                    "classification_api",
-                    "INFO" if ok else "ERROR",
-                    f"classified {classified_ok} objects",
-                )
-            except Exception:
-                pass
-
+        self._update_status(
+            "classifying",
+            "Classification completed" if ok else "Classification completed with errors",
+            classified=classified_ok
+        )
+        self._add_status_event(
+            "classification_api",
+            "INFO" if ok else "ERROR",
+            f"classified {classified_ok} objects"
+        )
         self.set_module_done("classification_api", ok)
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
     def send_to_db(self, classification_results_file, obj_names, logger):
         """Send classification results from file to database."""
@@ -361,18 +391,27 @@ class PipelineManager:
             return obj_names[:limit]
         return obj_names
 
-    def _run_snid_classification(self, night: str, obj_names: list, logger) -> list[dict]:
+    def _run_snid_classification(self, night: str, obj_names: list, spectrum_map: dict, logger) -> list[dict]:
         obj_names = self._limit_for_test([str(x) for x in obj_names], logger)
         params = self._snid_default_params()
         results = []
+        
         for obj_id in obj_names:
-            spath = util_spectrum_path(self.config, night, obj_id, ensure_dir=True)
+            spec_info = spectrum_map.get(str(obj_id))
+            if not spec_info:
+                logger.warning(f"[classification_api] No spectrum info for {obj_id}")
+                continue
+            
+            spath = spec_info['filepath']
+            tides_specid = spec_info['tides_specid']
+            
             try:
-                logger.info(f"[classification_api] SNID classify obj={obj_id} path={spath}")
-                res = self.snid.classify(spath, night, obj_id, snid_params=params)
-                results.append({"obj_id": obj_id, "snid": res})
+                logger.info(f"[classification_api] SNID classify obj={obj_id} tides_specid={tides_specid} path={spath}")
+                res = self.snid.classify(spath, night, obj_id, tides_specid=tides_specid, snid_params=params)
+                results.append({"obj_id": obj_id, "tides_specid": tides_specid, "snid": res})
             except Exception as e:
                 logger.exception(f"[classification_api] SNID failed for {obj_id}: {e}")
+        
         return results
 
     def run(self, night=None, objects=None, one_shot: bool = False, sleep_seconds: int = 60, env: str = "operations"):
@@ -388,7 +427,8 @@ class PipelineManager:
         
         logger = setup_logger(night, self.config)
         self.current_night = str(night or "")
-        obj_names: list = []  # ensure defined even if ingestion didn’t run
+        obj_names: list = []  # tides_id list for legacy
+        spectrum_map: dict = {}  # tides_id -> {tides_specid, filepath}
 
         try:
             sdir = util_spectra_night_dir(self.config, self.current_night, ensure=True)
@@ -398,32 +438,21 @@ class PipelineManager:
             return
 
         logger.info(f"Pipeline starting (night={night}, one_shot={one_shot}, sleep={sleep_seconds}s, env={env})")
-        # Redirect thumbnails to spectra night dir (single source of truth)
-        thumb_dir = self._spectra_night_dir()
-        self.config.setdefault("data_paths", {})
-        self.config["data_paths"]["static_plots_dir"] = thumb_dir
-        os.environ["STATIC_PLOTS_DIR"] = thumb_dir
-        logger.info(f"[config] Thumbnails will be saved to {thumb_dir}")
-        # Open status DB connection (optional; continue if not available)
+        
+        # Initialize status tracking
         try:
             if dbutil:
-                creds = dbutil.load_creds(self.config)
-                self._status_conn = dbutil.connect(creds)
-            if self._status_conn and self.current_night and status_store:
-                status_store.upsert_status(self._status_conn, self.current_night, "running", message="Manager started")
-                status_store.add_event(self._status_conn, self.current_night, "manager", "INFO", "Manager loop starting")
+                self._status_conn = self._get_db_connection()
+            self._update_status("running", "Manager started")
+            self._add_status_event("manager", "INFO", "Manager loop starting")
         except Exception as e:
             logger.warning(f"Status DB not available: {e}")
 
         while True:
             if _STOP:
                 logger.info("Shutdown signal received; exiting manager loop.")
-                if self._status_conn and self.current_night and status_store:
-                    try:
-                        status_store.add_event(self._status_conn, self.current_night, "manager", "INFO", "Shutdown requested")
-                        status_store.upsert_status(self._status_conn, self.current_night, "error", message="Interrupted", finished=True)
-                    except Exception:
-                        pass
+                self._add_status_event("manager", "INFO", "Shutdown requested")
+                self._update_status("error", "Interrupted", finished=True)
                 break
 
             all_done = True
@@ -442,8 +471,14 @@ class PipelineManager:
                         logger.info(f"[{name}] Running ingestion for night {self.current_night}")
                         returned = step["runner"](night=self.current_night, logger=logger, config=self.config)
                         if returned is not None:
-                            obj_names = [str(o) for o in returned]
-                            logger.info(f"[{name}] Ingestion produced {len(obj_names)} objects: {obj_names[:10]}{'...' if len(obj_names)>10 else ''}")
+                            for item in returned:
+                                tid = str(item['tides_id'])
+                                obj_names.append(tid)
+                                spectrum_map[tid] = {
+                                    'tides_specid': item['tides_specid'],
+                                    'filepath': item['filepath']
+                                }
+                            logger.info(f"[{name}] Ingestion produced {len(obj_names)} objects with tides_specid mapping")
                         else:
                             logger.warning(f"[{name}] Returned None (no objects)")
                         self.set_module_done(name, True)
@@ -458,7 +493,7 @@ class PipelineManager:
                         logger.warning(f"[{name}] No objects to classify (obj_names empty)")
                         self.set_module_done(name, True)
                         continue
-                    results = self._run_snid_classification(self.current_night, obj_names, logger)
+                    results = self._run_snid_classification(self.current_night, obj_names, spectrum_map, logger)
                     logger.info(f"[{name}] SNID classified {len(results)} objects")
                     self.set_module_done(name, True)
                     continue
@@ -522,19 +557,31 @@ class PipelineManager:
         lg = logger or setup_logger(night, self.config)
         lg.info(f"[classify_night] Starting SNID-only classification for night={night}")
 
-        # Ensure thumbs go to spectra night dir (consistent behavior)
-        thumb_dir = self._spectra_night_dir()
-        self.config.setdefault("data_paths", {})["static_plots_dir"] = thumb_dir
-        os.environ["STATIC_PLOTS_DIR"] = thumb_dir
-
+        # Build spectrum_map by querying DB for existing spectra
+        conn = self._get_db_connection()
         obj_names = [str(o) for o in (objects or self.list_spectra_objects(night))]
-        if not obj_names:
-            lg.warning(f"[classify_night] No spectra found in {thumb_dir} for night={night}")
+        spectrum_map = {}
+        
+        if conn and obj_names:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT tides_id, tides_specid, filepath
+                        FROM tides_spec
+                        WHERE tides_id = ANY(%s)
+                    """, ([int(o) for o in obj_names],))
+                    for row in cur.fetchall():
+                        tid, spec_id, fpath = row
+                        spectrum_map[str(tid)] = {'tides_specid': spec_id, 'filepath': fpath}
+            except Exception as e:
+                lg.warning(f"[classify_night] Failed to load spectrum map: {e}")
+        
+        if not spectrum_map:
+            lg.warning(f"[classify_night] No spectra found for night={night}")
             return {"night": night, "count": 0, "results": []}
 
-        results = self._run_snid_classification(self.current_night, obj_names, lg)
+        results = self._run_snid_classification(self.current_night, obj_names, spectrum_map, lg)
         lg.info(f"[classify_night] SNID finished for {len(results)} objects")
-        # Mark classification as done for this run
         self.set_module_done("classification_api", True)
         return {"night": night, "count": len(results), "results": results}
 
