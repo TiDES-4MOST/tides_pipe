@@ -47,11 +47,16 @@ class DataIngestion(Module):
         # ENV overrides config; default True to keep environments consistent unless explicitly disabled
         self._allow_temp = _as_bool(env_allow_temp if env_allow_temp is not None else cfg_allow_temp, True)
         
-        # Initialize stacking module if available
+        # Initialize stacking module if available and enabled
+        stacking_config = self.config.get('data_ingestion', {}).get('stacking', {})
+        self.stacking_enabled = stacking_config.get('enabled', True)  # Default: enabled
         self.stacking = Stacking(config) if Stacking is not None else None
         if self.stacking:
             self.logger = logging.getLogger(__name__)
-            self.logger.info("Stacking module initialized")
+            if self.stacking_enabled:
+                self.logger.info("Stacking module initialized and ENABLED")
+            else:
+                self.logger.info("Stacking module initialized but DISABLED by config")
 
     @staticmethod
     def _json_default(o):
@@ -437,9 +442,15 @@ class DataIngestion(Module):
             # Track counter for each OBJ_UID to generate unique tides_specid when SPECUID is missing
             obj_uid_counters = {}
             
+            # Count groups with multiple spectra for debugging
+            multi_spec_groups = [k for k, g in spectra_by_obj_uid.items() if len(g) > 1]
+            if multi_spec_groups:
+                self.logger.info(f"Found {len(multi_spec_groups)} groups with multiple spectra (candidates for stacking)")
+                self.logger.info(f"Stacking enabled: {self.stacking_enabled}, Stacking module available: {self.stacking is not None}")
+            
             for grouping_key, group in spectra_by_obj_uid.items():
                 try:
-                    if len(group) > 1 and self.stacking:
+                    if len(group) > 1 and self.stacking and self.stacking_enabled:
                         # Stack multiple spectra with same OBJ_UID
                         self.logger.info(f"Stacking {len(group)} spectra for OBJ_UID {grouping_key}")
                         obj_id = group[0]['tides_id']
