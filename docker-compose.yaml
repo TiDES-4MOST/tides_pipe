@@ -20,6 +20,7 @@ services:
       NGSF_API_URL: http://192.168.10.117:8001
       TRANSIENT_API_TOKEN: ${TRANSIENT_API_TOKEN}
       INGEST_ALLOW_TEMP: ${INGEST_ALLOW_TEMP:-"false"}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - /mnt/data/deliveries:/data/deliveries:rw
       - /mnt/data/spectra:/data/spectra:rw
