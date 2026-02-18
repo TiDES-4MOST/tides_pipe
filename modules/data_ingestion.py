@@ -846,6 +846,7 @@ class DataIngestion(Module):
           3) Else, attempt legacy fast path via OBJ_NME → tidestom.tides_cand.
           4) If all above fails, TEMP fallback: <YYYYMMDD><cc>.
         """
+        self.logger.debug("[resolve_tides_id] ENTRY: Starting tides_id resolution")
         self._last_was_temp = False
 
         def _get_any(row, candidates):
@@ -861,24 +862,35 @@ class DataIngestion(Module):
 
         # 1) Prefer OBJ_UID → tides_master.ostd_u_obj_id
         obj_uid = _get_any(meta_row, ['obj_uid', 'ostd_u_obj_id', 'ostd_uobj_id', 'u_obj_id'])
+        self.logger.debug(f"[resolve_tides_id] Step 1: Extracted OBJ_UID={obj_uid}")
         if obj_uid is not None:
+            self.logger.debug(f"[resolve_tides_id] Step 1: Querying tides_master with ostd_u_obj_id={obj_uid}")
             master = self._query_tides_master(ostd_u_obj_id=obj_uid)
             try:
                 if master and isinstance(master.get('tides_id'), (int, np.integer)):
-                    return int(master['tides_id'])
-            except Exception:
-                pass
+                    tides_id_result = int(master['tides_id'])
+                    self.logger.info(f"[resolve_tides_id] ✓ Step 1 SUCCESS: Found tides_id={tides_id_result} via tides_master.ostd_u_obj_id={obj_uid}")
+                    return tides_id_result
+                else:
+                    self.logger.debug(f"[resolve_tides_id] Step 1: tides_master returned no match for ostd_u_obj_id={obj_uid}")
+            except Exception as e:
+                self.logger.debug(f"[resolve_tides_id] Step 1: Exception during tides_master lookup: {e}")
+        else:
+            self.logger.debug("[resolve_tides_id] Step 1: OBJ_UID is None, skipping tides_master lookup")
 
         # 2) Transients API: map OBJ_UID → pk_4most, then tides_master
+        self.logger.debug(f"[resolve_tides_id] Step 2: Starting Transients API lookup for OBJ_UID={obj_uid}")
         if obj_uid is not None:
             token = self._get_api_token()
             if token:
+                self.logger.debug(f"[resolve_tides_id] Step 2: API token found, querying Transients API")
                 try:
                     trans_api.ACCESS_TOKEN = token
                     flt = f"ostd_u_obj_id__exact={int(obj_uid)}"
+                    self.logger.debug(f"[resolve_tides_id] Step 2: API filter={flt}")
                     res = trans_api.get_list(flt=flt, limit=10, timeout=15, return_mode="listdict")
                     if isinstance(res, list) and res:
-                        self.logger.info(f"Transients API returned {len(res)} results for OBJ_UID {obj_uid}")
+                        self.logger.info(f"[resolve_tides_id] Step 2: Transients API returned {len(res)} results for OBJ_UID {obj_uid}")
                         
                         # Try each result until we find a match in tides_master
                         for idx, cand in enumerate(res):
@@ -889,51 +901,83 @@ class DataIngestion(Module):
                             cand_ostd_u = cand.get('ostd_u_obj_id')
                             cand_name = cand.get('name')
                             
-                            self.logger.info(f"  Result {idx}: id={pk_4}, ostd_u_obj_id={cand_ostd_u}, name={cand_name}")
+                            self.logger.info(f"[resolve_tides_id] Step 2: Result {idx}: id={pk_4}, ostd_u_obj_id={cand_ostd_u}, name={cand_name}")
                             
                             # Try matching by pk_4most first
                             if pk_4 is not None:
+                                self.logger.debug(f"[resolve_tides_id] Step 2: Trying pk_4most={pk_4}")
                                 master = self._query_tides_master(pk_4most=pk_4)
                                 if master and isinstance(master.get('tides_id'), (int, np.integer)):
-                                    self.logger.info(f"  ✓ Found tides_id={master['tides_id']} for pk_4most={pk_4}")
-                                    return int(master['tides_id'])
+                                    tides_id_result = int(master['tides_id'])
+                                    self.logger.info(f"[resolve_tides_id] ✓ Step 2 SUCCESS: Found tides_id={tides_id_result} for pk_4most={pk_4}")
+                                    return tides_id_result
                                 else:
-                                    self.logger.debug(f"  ✗ No tides_master match for pk_4most={pk_4}")
+                                    self.logger.debug(f"[resolve_tides_id] Step 2: ✗ No tides_master match for pk_4most={pk_4}")
+                            else:
+                                self.logger.debug(f"[resolve_tides_id] Step 2: pk_4most is None for result {idx}")
                             
                             # Try matching by name if pk_4most failed
                             if cand_name:
+                                self.logger.debug(f"[resolve_tides_id] Step 2: Trying name={cand_name}")
                                 master = self._query_tides_master_by_name(cand_name)
                                 if master and isinstance(master.get('tides_id'), (int, np.integer)):
-                                    self.logger.info(f"  ✓ Found tides_id={master['tides_id']} for name={cand_name}")
-                                    return int(master['tides_id'])
+                                    tides_id_result = int(master['tides_id'])
+                                    self.logger.info(f"[resolve_tides_id] ✓ Step 2 SUCCESS: Found tides_id={tides_id_result} for name={cand_name}")
+                                    return tides_id_result
                                 else:
-                                    self.logger.debug(f"  ✗ No tides_master match for name={cand_name}")
+                                    self.logger.debug(f"[resolve_tides_id] Step 2: ✗ No tides_master match for name={cand_name}")
+                            else:
+                                self.logger.debug(f"[resolve_tides_id] Step 2: name is None for result {idx}")
                         
-                        self.logger.warning(f"Transients API returned {len(res)} results for OBJ_UID {obj_uid}, but none matched tides_master")
+                        self.logger.warning(f"[resolve_tides_id] Step 2: API returned {len(res)} results for OBJ_UID {obj_uid}, but none matched tides_master")
+                    else:
+                        self.logger.debug(f"[resolve_tides_id] Step 2: Transients API returned empty or invalid results: {res}")
                 except Exception as e:
-                    self.logger.debug(f"Transients API mapping via OBJ_UID failed: {e}")
+                    self.logger.warning(f"[resolve_tides_id] Step 2: Transients API mapping via OBJ_UID failed: {e}")
+            else:
+                self.logger.debug("[resolve_tides_id] Step 2: No API token available, skipping Transients API")
+        else:
+            self.logger.debug("[resolve_tides_id] Step 2: OBJ_UID is None, skipping Transients API")
 
         # 3) Legacy fast path via OBJ_NME present in tidestom.tides_cand
+        self.logger.debug("[resolve_tides_id] Step 3: Trying legacy fast path via OBJ_NME")
         try:
             obj_val = meta_row['OBJ_NME']
             obj_id_fast = int(obj_val)
+            self.logger.debug(f"[resolve_tides_id] Step 3: Extracted OBJ_NME={obj_id_fast}")
             if obj_id_fast in valid_ids:
+                self.logger.info(f"[resolve_tides_id] ✓ Step 3 SUCCESS: Found tides_id={obj_id_fast} via OBJ_NME in tides_cand")
                 return int(obj_id_fast)
-        except Exception:
-            pass
+            else:
+                self.logger.debug(f"[resolve_tides_id] Step 3: OBJ_NME={obj_id_fast} not in preloaded tides_cand")
+        except Exception as e:
+            self.logger.debug(f"[resolve_tides_id] Step 3: Failed to extract/parse OBJ_NME: {e}")
 
         # Optional: if other identifiers present, try tides_master directly
+        self.logger.debug("[resolve_tides_id] Step 4: Trying other identifiers (ostd_targ_id, pk_4most)")
         ostd_targ  = _get_any(meta_row, ['ostd_targ_id', 'ostd_target_id', 'targ_id'])
         pk_4most   = _get_any(meta_row, ['pk_4most', 'fourmost_id', '4most_id', 'pk_4m'])
-        master = self._query_tides_master(pk_4most=pk_4most, ostd_targ_id=ostd_targ)
-        if master and isinstance(master.get('tides_id'), (int, np.integer)):
-            return int(master['tides_id'])
+        self.logger.debug(f"[resolve_tides_id] Step 4: ostd_targ_id={ostd_targ}, pk_4most={pk_4most}")
+        if ostd_targ is not None or pk_4most is not None:
+            master = self._query_tides_master(pk_4most=pk_4most, ostd_targ_id=ostd_targ)
+            if master and isinstance(master.get('tides_id'), (int, np.integer)):
+                tides_id_result = int(master['tides_id'])
+                self.logger.info(f"[resolve_tides_id] ✓ Step 4 SUCCESS: Found tides_id={tides_id_result} via other identifiers")
+                return tides_id_result
+            else:
+                self.logger.debug("[resolve_tides_id] Step 4: No match found in tides_master")
+        else:
+            self.logger.debug("[resolve_tides_id] Step 4: No other identifiers available")
 
         # 4) TEMP fallback when no resolution was possible (honor allow_temp switch)
+        self.logger.debug(f"[resolve_tides_id] Step 5: All resolution methods failed. allow_temp={self._allow_temp}")
         if self._allow_temp:
             self._last_was_temp = True
-            return self._next_temp_id()
+            temp_id = self._next_temp_id()
+            self.logger.warning(f"[resolve_tides_id] Step 5: Falling back to TEMP ID={temp_id}")
+            return temp_id
         self._last_was_temp = False
+        self.logger.error("[resolve_tides_id] FAILURE: All resolution methods failed and TEMP IDs not allowed. Returning None.")
         return None
 
     def _extract_coords_from_meta(self, row) -> tuple[Optional[float], Optional[float]]:
