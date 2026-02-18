@@ -494,7 +494,7 @@ class DataIngestion(Module):
                         if total_exptime > 0:
                             stacked_metadata['EXPOSURE_TIME_S'] = total_exptime
                             stacked_metadata['TOTAL_EXPTIME_S'] = total_exptime  # Explicit field for stacked
-                        
+                        self.logger.info(f"Total exposure time for stacked spectrum (OBJ_UID {grouping_key}): {total_exptime} seconds, going to save")
                         # Save stacked spectrum
                         self._save_and_update_spectrum(
                             tides_specid=tides_specid,
@@ -515,7 +515,7 @@ class DataIngestion(Module):
                             stacked=True,
                             source_specuids=[s['specuid'] for s in group if s['specuid']]
                         )
-                        
+                        self.logger.info(f"Stacked spectrum for OBJ_UID {grouping_key}" f" saved with tides_specid {tides_specid}, adding to results")
                         obj_results.append({
                             'tides_id': obj_id,
                             'tides_specid': tides_specid,
