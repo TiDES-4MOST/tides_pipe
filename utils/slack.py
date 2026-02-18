@@ -41,7 +41,15 @@ def send_slack_message(
 
     Returns True on success, False otherwise. If no configuration,
     logs at DEBUG and returns False (no-op).
+    
+    Can be disabled by setting SLACK_ENABLED=false in environment.
     """
+    # Check if Slack is disabled via environment variable
+    slack_enabled = os.getenv("SLACK_ENABLED", "true").lower() in ("true", "1", "yes", "on")
+    if not slack_enabled:
+        logger.debug("Slack notifications disabled by SLACK_ENABLED=false; skipping message: %s", text)
+        return False
+    
     # 1) Incoming Webhook path
     url = webhook_url or _get_webhook_url()
     if url:
