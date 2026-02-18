@@ -455,14 +455,24 @@ class DataIngestion(Module):
                         self.logger.info(f"Stacking {len(group)} spectra for OBJ_UID {grouping_key}")
                         obj_id = group[0]['tides_id']
                         
-                        # Perform stacking
-                        wavelengths = [s['wavelength'] for s in group]
-                        fluxes = [s['flux'] for s in group]
-                        ivars = [s['ivar'] for s in group]
-                        
-                        wave_stacked, flux_stacked, ivar_stacked = self.stacking.weighted_median_stack(
-                            wavelengths, fluxes, ivars
-                        )
+                        try:
+                            # Perform stacking
+                            wavelengths = [s['wavelength'] for s in group]
+                            fluxes = [s['flux'] for s in group]
+                            ivars = [s['ivar'] for s in group]
+                            
+                            wave_stacked, flux_stacked, ivar_stacked = self.stacking.weighted_median_stack(
+                                wavelengths, fluxes, ivars
+                            )
+                        except Exception as stack_err:
+                            self.logger.error(f"Stacking failed for OBJ_UID {grouping_key}: {stack_err}")
+                            self.logger.error(f"Falling back to saving individual spectra instead")
+                            # Fall through to single-spectrum processing for each
+                            for spec in group:
+                                self._process_single_spectrum(
+                                    spec, obj_uid_counters, spectra_night_dir, fibinfodat, obj_results
+                                )
+                            continue
                         
                         # Now assign tides_specid for stacked spectrum
                         import zlib
@@ -512,63 +522,73 @@ class DataIngestion(Module):
                             'filepath': os.path.join(spectra_night_dir, f"{tides_specid}_spectrum.txt")
                         })
                     else:
-                        # Single spectrum - assign tides_specid and save
-                        spec = group[0]
-                        obj_id = spec['tides_id']
-                        
-                        # Assign tides_specid (prefer SPECUID from MEC)
-                        if spec['specuid'] is not None and spec['specuid'] > 0:
-                            tides_specid = spec['specuid']
-                        else:
-                            # Generate unique ID based on OBJ_UID + counter
-                            obj_uid = spec['obj_uid']
-                            if obj_uid not in obj_uid_counters:
-                                obj_uid_counters[obj_uid] = 0
-                            spec_index = obj_uid_counters[obj_uid]
-                            obj_uid_counters[obj_uid] += 1
-                            
-                            # Create unique ID: OBJ_UID * 1000 + spectrum_index
-                            # This ensures uniqueness and traceability
-                            if obj_uid is not None:
-                                tides_specid = (abs(obj_uid) * 1000) + spec_index
-                            else:
-                                # Fallback to hash-based ID if OBJ_UID is also missing
-                                import zlib
-                                obs_mjd = spec['metadata'].get('OBS_MJD', 0)
-                                base = f"{obj_id}|{obs_mjd}|{spec['counter']}"
-                                tides_specid = zlib.crc32(base.encode('utf-8')) & 0x7FFFFFFF
-                        
-                        # Save single spectrum
-                        self._save_and_update_spectrum(
-                            tides_specid=tides_specid,
-                            tides_id=obj_id,
-                            wave=spec['wavelength'],
-                            flux=spec['flux'],
-                            ivar=spec['ivar'],
-                            qual=spec['qual'],
-                            metadata=spec['metadata'],
-                            fiber_meta=spec['fiber_meta'],
-                            obrow=spec['obrow'],
-                            master_info=spec['master_info'],
-                            ra=spec['ra'],
-                            dec=spec['dec'],
-                            spectra_night_dir=spectra_night_dir,
-                            fibinfodat=fibinfodat,
-                            primary_header=spec['primary_header'],
-                            stacked=False,
-                            source_specuids=None
+                        # Single spectrum - use helper method
+                        self._process_single_spectrum(
+                            group[0], obj_uid_counters, spectra_night_dir, fibinfodat, obj_results
                         )
-                        
-                        obj_results.append({
-                            'tides_id': obj_id,
-                            'tides_specid': tides_specid,
-                            'filepath': os.path.join(spectra_night_dir, f"{tides_specid}_spectrum.txt")
-                        })
                         
                 except Exception as e:
                     self.logger.error(f"Error processing group {grouping_key}: {e}")
         
         return obj_results
+
+    # --------- Helper for processing single spectrum ---------
+    
+    def _process_single_spectrum(self, spec, obj_uid_counters, spectra_night_dir, fibinfodat, obj_results):
+        """
+        Process and save a single spectrum (not stacked).
+        Used for lone spectra or when stacking fails.
+        """
+        obj_id = spec['tides_id']
+        
+        # Assign tides_specid (prefer SPECUID from MEC)
+        if spec['specuid'] is not None and spec['specuid'] > 0:
+            tides_specid = spec['specuid']
+        else:
+            # Generate unique ID based on OBJ_UID + counter
+            obj_uid = spec['obj_uid']
+            if obj_uid not in obj_uid_counters:
+                obj_uid_counters[obj_uid] = 0
+            spec_index = obj_uid_counters[obj_uid]
+            obj_uid_counters[obj_uid] += 1
+            
+            # Create unique ID: OBJ_UID * 1000 + spectrum_index
+            # This ensures uniqueness and traceability
+            if obj_uid is not None:
+                tides_specid = (abs(obj_uid) * 1000) + spec_index
+            else:
+                # Fallback to hash-based ID if OBJ_UID is also missing
+                import zlib
+                obs_mjd = spec['metadata'].get('OBS_MJD', 0)
+                base = f"{obj_id}|{obs_mjd}|{spec['counter']}"
+                tides_specid = zlib.crc32(base.encode('utf-8')) & 0x7FFFFFFF
+        
+        # Save single spectrum
+        self._save_and_update_spectrum(
+            tides_specid=tides_specid,
+            tides_id=obj_id,
+            wave=spec['wavelength'],
+            flux=spec['flux'],
+            ivar=spec['ivar'],
+            qual=spec['qual'],
+            metadata=spec['metadata'],
+            fiber_meta=spec['fiber_meta'],
+            obrow=spec['obrow'],
+            master_info=spec['master_info'],
+            ra=spec['ra'],
+            dec=spec['dec'],
+            spectra_night_dir=spectra_night_dir,
+            fibinfodat=fibinfodat,
+            primary_header=spec['primary_header'],
+            stacked=False,
+            source_specuids=None
+        )
+        
+        obj_results.append({
+            'tides_id': obj_id,
+            'tides_specid': tides_specid,
+            'filepath': os.path.join(spectra_night_dir, f"{tides_specid}_spectrum.txt")
+        })
 
     # --------- Spectrum saving helper ---------
     

@@ -64,8 +64,22 @@ class Stacking(Module):
             if len(flux) != n_pix:
                 self.logger.warning(f"Spectrum {i} has different length ({len(flux)} vs {n_pix}); skipping")
                 continue
-            flux_stack[i, :] = flux
-            ivar_stack[i, :] = ivar
+            
+            # Keep flux as-is (including NaN) so we don't lose information
+            flux_clean = flux.copy()
+            ivar_clean = ivar.copy()
+            
+            # Find bad pixels: NaN/inf in either flux or ivar
+            bad_flux = ~np.isfinite(flux_clean)
+            bad_ivar = (~np.isfinite(ivar_clean)) | (ivar_clean < 0)
+            bad_pixels = bad_flux | bad_ivar
+            
+            # Set ivar to 0 for bad pixels so they're excluded from stacking
+            # (but keep flux values so we don't replace real data)
+            ivar_clean[bad_pixels] = 0.0
+            
+            flux_stack[i, :] = flux_clean
+            ivar_stack[i, :] = ivar_clean
         
         # Use ivar directly as weights
         # Guard against zero/NaN ivars
@@ -105,6 +119,19 @@ class Stacking(Module):
                 # Ivar propagation: sum of ivars for independent measurements
                 valid_ivars = ivar_stack[valid_mask, j]
                 ivar_stacked[j] = np.sum(valid_ivars)
+        
+        # Validate stacked spectrum before returning
+        n_nan_flux = np.sum(~np.isfinite(flux_stacked))
+        n_nan_ivar = np.sum(~np.isfinite(ivar_stacked))
+        n_valid = np.sum(np.isfinite(flux_stacked) & (ivar_stacked > 0))
+        
+        self.logger.info(f"Stacked spectrum: {n_valid}/{n_pix} valid pixels, {n_nan_flux} NaN flux, {n_nan_ivar} NaN ivar")
+        
+        if n_valid == 0:
+            raise ValueError(f"Stacking produced no valid pixels (all NaN or zero ivar)")
+        
+        if n_valid < n_pix * 0.1:  # Less than 10% valid
+            self.logger.warning(f"Stacking produced mostly invalid data: only {n_valid}/{n_pix} valid pixels")
         
         return wave, flux_stacked, ivar_stacked
     
