@@ -318,6 +318,23 @@ class SnidHandler:
                                 (int(tides_specid), int(tides_id), sn_type, rlap, version, z, phase)
                             )
                         self.log.info(f"[snid] Upserted per-spectrum classification (tides_specid={tides_specid}, tides_id={tides_id})")
+                        
+                        # Also save to pipeline_classification_global
+                        try:
+                            cur.execute(
+                                """
+                                INSERT INTO pipeline_classification_global (tides_specid, classification, probability, z, phase, notes)
+                                VALUES (%s, %s, %s, %s, %s, 'snid')
+                                ON CONFLICT (tides_specid)
+                                DO UPDATE SET classification = EXCLUDED.classification, probability = EXCLUDED.probability, 
+                                              z = EXCLUDED.z, phase = EXCLUDED.phase, notes = EXCLUDED.notes
+                                """,
+                                (int(tides_specid), sn_type, rlap, z, phase)
+                            )
+                            self.log.info(f"[snid] Saved to pipeline_classification_global (tides_specid={tides_specid})")
+                        except Exception as e:
+                            self.log.warning(f"[snid] Failed to save to pipeline_classification_global: {e}")
+                        
                         return
         except Exception as e:
             # Likely schema lacks tides_specid; fall back to tides_id-only write

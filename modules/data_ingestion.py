@@ -229,23 +229,6 @@ class DataIngestion(Module):
                     pass
                 self.logger.warning(f"Preload tides_cand ids failed: {e}")
 
-            def _row_get(row, candidates, default=None):
-                if row is None:
-                    return default
-                try:
-                    names = list(getattr(row, 'dtype', {}).names or [])
-                except Exception:
-                    names = []
-                name_map = {str(n).lower(): n for n in names}
-                for c in candidates:
-                    key = name_map.get(str(c).lower())
-                    if key is not None:
-                        try:
-                            return row[key]
-                        except Exception:
-                            continue
-                return default
-
             # PHASE 1: Parse all spectra and collect by OBJ_UID
             self.logger.info("Phase 1: Parsing all spectra from FITS file...")
             spectra_by_obj_uid = {}  # obj_uid -> list of spectrum dicts
@@ -296,8 +279,14 @@ class DataIngestion(Module):
                     
                     # Try to get from OBMETATAB first (actual observation date)
                     if obrow is not None:
-                        obs_date = _row_get(obrow, ['DATE-OBS'], None)
-                        obs_mjd = _row_get(obrow, ['MJD-OBS'], None)
+                        try:
+                            obs_date = obrow['DATE-OBS']
+                        except (KeyError, IndexError):
+                            pass
+                        try:
+                            obs_mjd = obrow['MJD-OBS']
+                        except (KeyError, IndexError):
+                            pass
                     
                     # Fallback to spectrum header if not in OBMETATAB
                     if obs_date is None:
@@ -342,38 +331,41 @@ class DataIngestion(Module):
 
                     # Add selected OBMETATAB per-spectrum fields (using exact MEC column names)
                     ob_fields = {
-                        'OB_TARGET': ['OBJECT'],
-                        'OB_RA': ['RA'],
-                        'OB_DEC': ['DEC'],
-                        'OB_TINT_ELEM_S': ['EXPTIME'],
-                        'OB_TINT_SUM_S': ['TEXPTIME'],
-                        'OB_START': ['OBSTART'],
-                        'OB_MJD_START': ['MJD-OBS'],
-                        'OB_MJD_END': ['MJD-END'],
-                        'OB_DATE': ['DATE-OBS'],
-                        'SPECTRO_PATH': ['PATH'],
-                        'OBS_TYPE': ['OBSTYPE'],
-                        'BIN_SPEC': ['BINSPECT'],
-                        'BIN_SPAT': ['BINSPATL'],
-                        'SNR_MEDIAN': ['MEDSNR'],
-                        'SNR_MIN': ['MINSNR'],
-                        'SNR_MAX': ['MAXSNR'],
-                        'L1_PROCESS_DATE': ['PROCDATE'],
-                        'OB_ID': ['OBID'],
-                        'PI_COI': ['PI-COI'],
-                        'OBSERVER': ['OBSERVER'],
-                        'NCOMBINE': ['NCOMBINE'],
-                        'TELAPSE': ['TELAPSE'],
-                        'TMID': ['TMID']
+                        'OB_TARGET': 'OBJECT',
+                        'OB_RA': 'RA',
+                        'OB_DEC': 'DEC',
+                        'OB_TINT_ELEM_S': 'EXPTIME',
+                        'OB_TINT_SUM_S': 'TEXPTIME',
+                        'OB_START': 'OBSTART',
+                        'OB_MJD_START': 'MJD-OBS',
+                        'OB_MJD_END': 'MJD-END',
+                        'OB_DATE': 'DATE-OBS',
+                        'SPECTRO_PATH': 'PATH',
+                        'OBS_TYPE': 'OBSTYPE',
+                        'BIN_SPEC': 'BINSPECT',
+                        'BIN_SPAT': 'BINSPATL',
+                        'SNR_MEDIAN': 'MEDSNR',
+                        'SNR_MIN': 'MINSNR',
+                        'SNR_MAX': 'MAXSNR',
+                        'L1_PROCESS_DATE': 'PROCDATE',
+                        'OB_ID': 'OBID',
+                        'PI_COI': 'PI-COI',
+                        'OBSERVER': 'OBSERVER',
+                        'NCOMBINE': 'NCOMBINE',
+                        'TELAPSE': 'TELAPSE',
+                        'TMID': 'TMID'
                     }
-                    for k, cands in ob_fields.items():
-                        val = _row_get(obrow, cands, None)
-                        if val is not None:
-                            # Coerce numpy scalars to python types via _json_default
+                    if obrow is not None:
+                        for meta_key, col_name in ob_fields.items():
                             try:
-                                metadata[k] = self._json_default(val)
-                            except Exception:
-                                metadata[k] = str(val)
+                                val = obrow[col_name]
+                                # Coerce numpy scalars to python types via _json_default
+                                try:
+                                    metadata[meta_key] = self._json_default(val)
+                                except Exception:
+                                    metadata[meta_key] = str(val)
+                            except (KeyError, IndexError):
+                                pass
 
                     # Expose a canonical EXPOSURE_TIME_S in metadata when available
                     try:
@@ -681,42 +673,28 @@ class DataIngestion(Module):
         self.generate_thumbnail(wave, flux, thumbnail_file)
         
         # Add OBMETATAB fields to metadata
-        def _row_get(row, candidates, default=None):
-            if row is None:
-                return default
-            try:
-                names = list(getattr(row, 'dtype', {}).names or [])
-            except Exception:
-                names = []
-            name_map = {str(n).lower(): n for n in names}
-            for c in candidates:
-                key = name_map.get(str(c).lower())
-                if key is not None:
-                    try:
-                        return row[key]
-                    except Exception:
-                        continue
-            return default
-        
         ob_fields = {
-            'OB_TARGET': ['OBJECT'],
-            'OB_RA': ['RA'],
-            'OB_DEC': ['DEC'],
-            'OB_TINT_ELEM_S': ['EXPTIME'],
-            'OB_TINT_SUM_S': ['TEXPTIME'],
-            'OB_START': ['OBSTART'],
-            'OB_END': ['OBEND'],
-            'OB_DATE': ['DATE-OBS'],
-            'SPECTRO_PATH': ['PATH'],
-            'OBS_TYPE': ['OBSTYPE'],
+            'OB_TARGET': 'OBJECT',
+            'OB_RA': 'RA',
+            'OB_DEC': 'DEC',
+            'OB_TINT_ELEM_S': 'EXPTIME',
+            'OB_TINT_SUM_S': 'TEXPTIME',
+            'OB_START': 'OBSTART',
+            'OB_END': 'OBEND',
+            'OB_DATE': 'DATE-OBS',
+            'SPECTRO_PATH': 'PATH',
+            'OBS_TYPE': 'OBSTYPE',
         }
-        for k, cands in ob_fields.items():
-            val = _row_get(obrow, cands, None)
-            if val is not None:
+        if obrow is not None:
+            for meta_key, col_name in ob_fields.items():
                 try:
-                    metadata[k] = self._json_default(val)
-                except Exception:
-                    metadata[k] = str(val)
+                    val = obrow[col_name]
+                    try:
+                        metadata[meta_key] = self._json_default(val)
+                    except Exception:
+                        metadata[meta_key] = str(val)
+                except (KeyError, IndexError):
+                    pass
         
         # Add L1 processing info
         try:
