@@ -849,23 +849,12 @@ class DataIngestion(Module):
         self.logger.debug("[resolve_tides_id] ENTRY: Starting tides_id resolution")
         self._last_was_temp = False
 
-        def _get_any(row, candidates):
-            try:
-                names = list(getattr(row, 'dtype', {}).names or [])
-            except Exception:
-                names = []
-            names_l = {str(n).lower(): n for n in names}
-            for cand in candidates:
-                k = names_l.get(str(cand).lower())
-                if k is not None:
-                    try:
-                        return row[k]
-                    except Exception:
-                        continue
-            return None
-
         # 1) Prefer OBJ_UID → tides_master.ostd_u_obj_id
-        obj_uid = _get_any(meta_row, ['obj_uid', 'ostd_u_obj_id', 'ostd_uobj_id', 'u_obj_id'])
+        obj_uid = None
+        try:
+            obj_uid = meta_row['OBJ_UID']
+        except (KeyError, IndexError):
+            pass
         self.logger.debug(f"[resolve_tides_id] Step 1: Extracted OBJ_UID={obj_uid}")
         if obj_uid is not None:
             self.logger.debug(f"[resolve_tides_id] Step 1: Querying tides_master with ostd_u_obj_id={obj_uid}")
@@ -959,8 +948,16 @@ class DataIngestion(Module):
 
         # Optional: if other identifiers present, try tides_master directly
         self.logger.debug("[resolve_tides_id] Step 4: Trying other identifiers (ostd_targ_id, pk_4most)")
-        ostd_targ  = _get_any(meta_row, ['ostd_targ_id', 'ostd_target_id', 'targ_id'])
-        pk_4most   = _get_any(meta_row, ['pk_4most', 'fourmost_id', '4most_id', 'pk_4m'])
+        ostd_targ = None
+        pk_4most = None
+        try:
+            ostd_targ = meta_row['OSTD_TARG_ID']
+        except (KeyError, IndexError):
+            pass
+        try:
+            pk_4most = meta_row['PK_4MOST']
+        except (KeyError, IndexError):
+            pass
         self.logger.debug(f"[resolve_tides_id] Step 4: ostd_targ_id={ostd_targ}, pk_4most={pk_4most}")
         if ostd_targ is not None or pk_4most is not None:
             master = self._query_tides_master(pk_4most=pk_4most, ostd_targ_id=ostd_targ)
@@ -1304,21 +1301,29 @@ class DataIngestion(Module):
 
     def _lookup_master_info(self, meta_row) -> Optional[Dict[str, Any]]:
         """Convenience to reuse _query_tides_master with IDs present in the row."""
-        def _get_any(row, cands):
-            names_l = {n.lower(): n for n in getattr(row, 'names', [])}
-            for cand in cands:
-                k = names_l.get(cand.lower())
-                if k is not None:
-                    try:
-                        return row[k]
-                    except Exception:
-                        continue
-            return None
+        pk_4most = None
+        ostd_u_obj_id = None
+        ostd_targ_id = None
+        
+        try:
+            pk_4most = meta_row['PK_4MOST']
+        except (KeyError, IndexError):
+            pass
+        
+        try:
+            ostd_u_obj_id = meta_row['OBJ_UID']
+        except (KeyError, IndexError):
+            pass
+        
+        try:
+            ostd_targ_id = meta_row['OSTD_TARG_ID']
+        except (KeyError, IndexError):
+            pass
+        
         return self._query_tides_master(
-            pk_4most=_get_any(meta_row, ['pk_4most', 'fourmost_id', '4most_id']),
-            # Accept OBJ_UID here as well
-            ostd_u_obj_id=_get_any(meta_row, ['ostd_u_obj_id', 'ostd_uobj_id', 'u_obj_id', 'obj_uid']),
-            ostd_targ_id=_get_any(meta_row, ['ostd_targ_id', 'ostd_target_id', 'targ_id'])
+            pk_4most=pk_4most,
+            ostd_u_obj_id=ostd_u_obj_id,
+            ostd_targ_id=ostd_targ_id
         )
 
     def _update_basetarget_coords(self, tides_id: int, ra: Any, dec: Any):
