@@ -340,7 +340,7 @@ class DataIngestion(Module):
                     if file_date is not None:
                         metadata['FILE_DATE'] = file_date
 
-                    # Add selected OBMETATAB per-spectrum fields (using actual MEC column names)
+                    # Add selected OBMETATAB per-spectrum fields (using exact MEC column names)
                     ob_fields = {
                         'OB_TARGET': ['OBJECT'],
                         'OB_RA': ['RA'],
@@ -453,7 +453,22 @@ class DataIngestion(Module):
                     if len(group) > 1 and self.stacking and self.stacking_enabled:
                         # Stack multiple spectra with same OBJ_UID
                         self.logger.info(f"Stacking {len(group)} spectra for OBJ_UID {grouping_key}")
-                        obj_id = group[0]['tides_id']
+                        
+                        # Find the correct tides_id (prefer non-TEMP, or use first)
+                        obj_id = None
+                        for spec in group:
+                            candidate_id = spec['tides_id']
+                            if candidate_id is not None:
+                                # Check if this is a TEMP id (format: YYYYMMDDXX where XX is counter)
+                                id_str = str(candidate_id)
+                                if self._temp_prefix and id_str.startswith(self._temp_prefix):
+                                    continue  # Skip TEMP ids
+                                obj_id = candidate_id
+                                break
+                        # Fallback to first spectrum's id if all are TEMP
+                        if obj_id is None:
+                            obj_id = group[0]['tides_id']
+                            self.logger.warning(f"All spectra in group {grouping_key} have TEMP tides_id; using {obj_id}")
                         
                         try:
                             # Perform stacking
@@ -479,22 +494,42 @@ class DataIngestion(Module):
                         stack_id_str = f"STACK_{grouping_key}_{len(group)}"
                         tides_specid = zlib.crc32(stack_id_str.encode('utf-8')) & 0x7FFFFFFF
                         
-                        # Sum exposure times for stacked spectrum
-                        total_exptime = 0.0
+                        # Aggregate metadata from all spectra in the stack
+                        # Start with first spectrum's metadata
+                        stacked_metadata = group[0]['metadata'].copy()
+                        
+                        # Find earliest OBS_DATE and OBS_MJD
+                        earliest_date = None
+                        earliest_mjd = None
                         for spec in group:
-                            exp = spec['metadata'].get('EXPOSURE_TIME_S')
-                            if exp is not None:
+                            obs_date = spec['metadata'].get('OBS_DATE')
+                            obs_mjd = spec['metadata'].get('OBS_MJD')
+                            
+                            if obs_mjd is not None:
+                                if earliest_mjd is None or obs_mjd < earliest_mjd:
+                                    earliest_mjd = obs_mjd
+                                    earliest_date = obs_date
+                        
+                        if earliest_date is not None:
+                            stacked_metadata['OBS_DATE'] = earliest_date
+                        if earliest_mjd is not None:
+                            stacked_metadata['OBS_MJD'] = earliest_mjd
+                        
+                        # Sum exposure times from OBMETATAB TEXPTIME only
+                        total_texptime = 0.0
+                        for spec in group:
+                            texp = spec['metadata'].get('OB_TINT_SUM_S')
+                            if texp is not None:
                                 try:
-                                    total_exptime += float(exp)
+                                    total_texptime += float(texp)
                                 except Exception:
                                     pass
                         
-                        # Update metadata with total exposure time
-                        stacked_metadata = group[0]['metadata'].copy()
-                        if total_exptime > 0:
-                            stacked_metadata['EXPOSURE_TIME_S'] = total_exptime
-                            stacked_metadata['TOTAL_EXPTIME_S'] = total_exptime  # Explicit field for stacked
-                        self.logger.info(f"Total exposure time for stacked spectrum (OBJ_UID {grouping_key}): {total_exptime} seconds, going to save")
+                        # Update metadata with summed exposure time
+                        if total_texptime > 0:
+                            stacked_metadata['OB_TINT_SUM_S'] = total_texptime
+                        
+                        self.logger.info(f"Stacked metadata: DATE-OBS={earliest_date}, TEXPTIME={total_texptime}s, N_spectra={len(group)}")
                         # Save stacked spectrum
                         self._save_and_update_spectrum(
                             tides_specid=tides_specid,
@@ -664,16 +699,16 @@ class DataIngestion(Module):
             return default
         
         ob_fields = {
-            'OB_TARGET': ['TARG_DES', 'TARGET', 'PI_TARG', 'TARGNAME', 'OBJNAME'],
-            'OB_RA': ['RA', 'RA_DEG'],
-            'OB_DEC': ['DEC', 'DEC_DEG'],
-            'OB_TINT_ELEM_S': ['TINT', 'DIT', 'TINT_ELEM', 'EXPTIME_ELEM'],
-            'OB_TINT_SUM_S': ['TINTSUM', 'EXPTIME', 'SUM_EXPTIME', 'TEXPTIME'],
-            'OB_START': ['OBS_START', 'START_UTC', 'DATE_BEG', 'START_ISO'],
-            'OB_END': ['OBS_END', 'END_UTC', 'DATE_END', 'END_ISO'],
-            'OB_DATE': ['OBS_DATE', 'DATE_OBS', 'DATE'],
-            'SPECTRO_PATH': ['SPECTRO_PATH', 'SPECTRO', 'SPECTROG'],
-            'OBS_TYPE': ['OBS_TYPE', 'OBSTYPE', 'OBSERVATION_TYPE'],
+            'OB_TARGET': ['OBJECT'],
+            'OB_RA': ['RA'],
+            'OB_DEC': ['DEC'],
+            'OB_TINT_ELEM_S': ['EXPTIME'],
+            'OB_TINT_SUM_S': ['TEXPTIME'],
+            'OB_START': ['OBSTART'],
+            'OB_END': ['OBEND'],
+            'OB_DATE': ['DATE-OBS'],
+            'SPECTRO_PATH': ['PATH'],
+            'OBS_TYPE': ['OBSTYPE'],
         }
         for k, cands in ob_fields.items():
             val = _row_get(obrow, cands, None)
