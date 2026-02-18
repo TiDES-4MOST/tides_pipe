@@ -473,7 +473,7 @@ class DataIngestion(Module):
                                     spec, obj_uid_counters, spectra_night_dir, fibinfodat, obj_results
                                 )
                             continue
-                        
+                        self.logger.info(f"Stacking successful for OBJ_UID {grouping_key}, move to saving stacked spectrum")
                         # Now assign tides_specid for stacked spectrum
                         import zlib
                         stack_id_str = f"STACK_{grouping_key}_{len(group)}"
