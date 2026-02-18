@@ -710,7 +710,17 @@ class DataIngestion(Module):
         # Ensure BaseTarget and tides_cand
         name_for_bt = master_info.get('name') if master_info else None
         if not name_for_bt:
-            name_for_bt = f"TEMP-{tides_id}"
+            # Try to get name from tides_master by tides_id (if not a TEMP id)
+            tides_id_str = str(tides_id)
+            is_temp = self._temp_prefix and tides_id_str.startswith(self._temp_prefix)
+            if not is_temp:
+                master_by_id = self._query_tides_master_by_tides_id(int(tides_id))
+                if master_by_id and master_by_id.get('name'):
+                    name_for_bt = master_by_id['name']
+            
+            # Last resort: use TEMP placeholder
+            if not name_for_bt:
+                name_for_bt = f"TEMP-{tides_id}"
         
         try:
             self._ensure_basetarget(int(tides_id), name_for_bt, ra, dec, fiber_meta=fiber_meta)
