@@ -279,12 +279,28 @@ class DataIngestion(Module):
                     if specuid_val is not None:
                         try:
                             specuid_val = int(specuid_val)
+                            # Treat -1 or negative values as invalid/missing
+                            if specuid_val < 0:
+                                specuid_val = None
                         except Exception:
                             specuid_val = None
                     
-                    # Obs time from header
-                    obs_mjd = specheader.get('MJD-OBS') or specheader.get('MJDOBS') or specheader.get('MJD')
-                    obs_date = specheader.get('DATE-OBS')
+                    # Obs time - prefer OBMETATAB, fallback to spectrum header
+                    obs_date = None
+                    obs_mjd = None
+                    
+                    # Try to get from OBMETATAB first (actual observation date)
+                    if obrow is not None:
+                        obs_date = _row_get(obrow, ['DATE-OBS'], None)
+                        obs_mjd = _row_get(obrow, ['MJD-OBS'], None)
+                    
+                    # Fallback to spectrum header if not in OBMETATAB
+                    if obs_date is None:
+                        obs_date = specheader.get('DATE-OBS')
+                    if obs_mjd is None:
+                        obs_mjd = specheader.get('MJD-OBS') or specheader.get('MJDOBS') or specheader.get('MJD')
+                    
+                    # Last resort: use current time
                     if obs_mjd is None and obs_date is None:
                         obs_date = datetime.now().isoformat()
 
@@ -319,24 +335,31 @@ class DataIngestion(Module):
                     if file_date is not None:
                         metadata['FILE_DATE'] = file_date
 
-                    # Add selected OBMETATAB per-spectrum fields (best-effort; keys vary)
+                    # Add selected OBMETATAB per-spectrum fields (using actual MEC column names)
                     ob_fields = {
-                        'OB_TARGET': ['TARG_DES', 'TARGET', 'PI_TARG', 'TARGNAME', 'OBJNAME'],
-                        'OB_RA': ['RA', 'RA_DEG'],
-                        'OB_DEC': ['DEC', 'DEC_DEG'],
-                        'OB_TINT_ELEM_S': ['TINT', 'DIT', 'TINT_ELEM', 'EXPTIME_ELEM'],
-                        'OB_TINT_SUM_S': ['TINTSUM', 'EXPTIME', 'SUM_EXPTIME', 'TEXPTIME'],
-                        'OB_START': ['OBS_START', 'START_UTC', 'DATE_BEG', 'START_ISO'],
-                        'OB_END': ['OBS_END', 'END_UTC', 'DATE_END', 'END_ISO'],
-                        'OB_DATE': ['OBS_DATE', 'DATE_OBS', 'DATE'],
-                        'SPECTRO_PATH': ['SPECTRO_PATH', 'SPECTRO', 'SPECTROG'],
-                        'OBS_TYPE': ['OBS_TYPE', 'OBSTYPE', 'OBSERVATION_TYPE'],
-                        'BIN_SPEC': ['BIN_SPEC', 'BIN_SPECTRA'],
-                        'BIN_SPAT': ['BIN_SPAT', 'BIN_SPATIAL'],
-                        'SNR_MEDIAN': ['SNR_MED', 'SNR_MEDIAN'],
-                        'SNR_MIN': ['SNR_MIN'],
-                        'SNR_MAX': ['SNR_MAX'],
-                        'L1_PROCESS_DATE': ['PROC_DATE', 'L1PROC_DATE', 'PROC_DT']
+                        'OB_TARGET': ['OBJECT'],
+                        'OB_RA': ['RA'],
+                        'OB_DEC': ['DEC'],
+                        'OB_TINT_ELEM_S': ['EXPTIME'],
+                        'OB_TINT_SUM_S': ['TEXPTIME'],
+                        'OB_START': ['OBSTART'],
+                        'OB_MJD_START': ['MJD-OBS'],
+                        'OB_MJD_END': ['MJD-END'],
+                        'OB_DATE': ['DATE-OBS'],
+                        'SPECTRO_PATH': ['PATH'],
+                        'OBS_TYPE': ['OBSTYPE'],
+                        'BIN_SPEC': ['BINSPECT'],
+                        'BIN_SPAT': ['BINSPATL'],
+                        'SNR_MEDIAN': ['MEDSNR'],
+                        'SNR_MIN': ['MINSNR'],
+                        'SNR_MAX': ['MAXSNR'],
+                        'L1_PROCESS_DATE': ['PROCDATE'],
+                        'OB_ID': ['OBID'],
+                        'PI_COI': ['PI-COI'],
+                        'OBSERVER': ['OBSERVER'],
+                        'NCOMBINE': ['NCOMBINE'],
+                        'TELAPSE': ['TELAPSE'],
+                        'TMID': ['TMID']
                     }
                     for k, cands in ob_fields.items():
                         val = _row_get(obrow, cands, None)
@@ -411,6 +434,9 @@ class DataIngestion(Module):
             # PHASE 2: Stack duplicates and assign tides_specid
             self.logger.info(f"Phase 2: Processing {len(spectra_by_obj_uid)} unique OBJ_UID groups...")
             
+            # Track counter for each OBJ_UID to generate unique tides_specid when SPECUID is missing
+            obj_uid_counters = {}
+            
             for grouping_key, group in spectra_by_obj_uid.items():
                 try:
                     if len(group) > 1 and self.stacking:
@@ -480,13 +506,26 @@ class DataIngestion(Module):
                         obj_id = spec['tides_id']
                         
                         # Assign tides_specid (prefer SPECUID from MEC)
-                        if spec['specuid'] is not None:
+                        if spec['specuid'] is not None and spec['specuid'] > 0:
                             tides_specid = spec['specuid']
                         else:
-                            import zlib
-                            obs_mjd = spec['metadata'].get('OBS_MJD', 0)
-                            base = f"{obj_id}|{obs_mjd}|{spec['counter']}"
-                            tides_specid = zlib.crc32(base.encode('utf-8')) & 0x7FFFFFFF
+                            # Generate unique ID based on OBJ_UID + counter
+                            obj_uid = spec['obj_uid']
+                            if obj_uid not in obj_uid_counters:
+                                obj_uid_counters[obj_uid] = 0
+                            spec_index = obj_uid_counters[obj_uid]
+                            obj_uid_counters[obj_uid] += 1
+                            
+                            # Create unique ID: OBJ_UID * 1000 + spectrum_index
+                            # This ensures uniqueness and traceability
+                            if obj_uid is not None:
+                                tides_specid = (abs(obj_uid) * 1000) + spec_index
+                            else:
+                                # Fallback to hash-based ID if OBJ_UID is also missing
+                                import zlib
+                                obs_mjd = spec['metadata'].get('OBS_MJD', 0)
+                                base = f"{obj_id}|{obs_mjd}|{spec['counter']}"
+                                tides_specid = zlib.crc32(base.encode('utf-8')) & 0x7FFFFFFF
                         
                         # Save single spectrum
                         self._save_and_update_spectrum(
