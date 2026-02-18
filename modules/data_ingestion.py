@@ -876,15 +876,40 @@ class DataIngestion(Module):
                 try:
                     trans_api.ACCESS_TOKEN = token
                     flt = f"ostd_u_obj_id__exact={int(obj_uid)}"
-                    res = trans_api.get_list(flt=flt, limit=1, timeout=15, return_mode="listdict")
+                    res = trans_api.get_list(flt=flt, limit=10, timeout=15, return_mode="listdict")
                     if isinstance(res, list) and res:
-                        cand = res[0]
-                        pk_4 = None
-                        if isinstance(cand, dict):
+                        self.logger.info(f"Transients API returned {len(res)} results for OBJ_UID {obj_uid}")
+                        
+                        # Try each result until we find a match in tides_master
+                        for idx, cand in enumerate(res):
+                            if not isinstance(cand, dict):
+                                continue
+                            
                             pk_4 = cand.get('pk_4most') or cand.get('id')
-                        master = self._query_tides_master(pk_4most=pk_4)
-                        if master and isinstance(master.get('tides_id'), (int, np.integer)):
-                            return int(master['tides_id'])
+                            cand_ostd_u = cand.get('ostd_u_obj_id')
+                            cand_name = cand.get('name')
+                            
+                            self.logger.info(f"  Result {idx}: id={pk_4}, ostd_u_obj_id={cand_ostd_u}, name={cand_name}")
+                            
+                            # Try matching by pk_4most first
+                            if pk_4 is not None:
+                                master = self._query_tides_master(pk_4most=pk_4)
+                                if master and isinstance(master.get('tides_id'), (int, np.integer)):
+                                    self.logger.info(f"  ✓ Found tides_id={master['tides_id']} for pk_4most={pk_4}")
+                                    return int(master['tides_id'])
+                                else:
+                                    self.logger.debug(f"  ✗ No tides_master match for pk_4most={pk_4}")
+                            
+                            # Try matching by name if pk_4most failed
+                            if cand_name:
+                                master = self._query_tides_master_by_name(cand_name)
+                                if master and isinstance(master.get('tides_id'), (int, np.integer)):
+                                    self.logger.info(f"  ✓ Found tides_id={master['tides_id']} for name={cand_name}")
+                                    return int(master['tides_id'])
+                                else:
+                                    self.logger.debug(f"  ✗ No tides_master match for name={cand_name}")
+                        
+                        self.logger.warning(f"Transients API returned {len(res)} results for OBJ_UID {obj_uid}, but none matched tides_master")
                 except Exception as e:
                     self.logger.debug(f"Transients API mapping via OBJ_UID failed: {e}")
 
@@ -1160,6 +1185,30 @@ class DataIngestion(Module):
                 return None
         except Exception as e:
             self.logger.debug(f"tides_master by tides_id lookup failed: {e}")
+            return None
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _query_tides_master_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Query tides_master by name to get tides_id/ra/dec."""
+        if not name:
+            return None
+        tides_db_name = os.getenv('TIDES_DB_NAME') or 'tides'
+        conn = self.connect_to_db(db_name=tides_db_name)
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT tides_id, name, ra, dec FROM tides_master WHERE name = %s LIMIT 1", (str(name),))
+                row = cur.fetchone()
+                if row:
+                    return {'tides_id': row[0], 'name': row[1], 'ra': row[2], 'dec': row[3]}
+                return None
+        except Exception as e:
+            self.logger.debug(f"tides_master by name lookup failed: {e}")
             return None
         finally:
             try:
