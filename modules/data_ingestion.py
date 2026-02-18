@@ -850,9 +850,13 @@ class DataIngestion(Module):
         self._last_was_temp = False
 
         def _get_any(row, candidates):
-            names_l = {n.lower(): n for n in getattr(row, 'names', [])}
+            try:
+                names = list(getattr(row, 'dtype', {}).names or [])
+            except Exception:
+                names = []
+            names_l = {str(n).lower(): n for n in names}
             for cand in candidates:
-                k = names_l.get(cand.lower())
+                k = names_l.get(str(cand).lower())
                 if k is not None:
                     try:
                         return row[k]
