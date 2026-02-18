@@ -534,7 +534,6 @@ class DataIngestion(Module):
         """
         # Add tides_specid to metadata
         metadata['TIDES_SPECID'] = int(tides_specid)
-        metadata['QMOST_ID'] = self._compute_qmost_id(tides_id, f"{tides_specid}_spectrum.txt")
         
         # Add stacking provenance
         metadata['STACKED'] = stacked
@@ -641,7 +640,7 @@ class DataIngestion(Module):
             self.logger.warning(f"Failed to ensure tides_cand({tides_id}): {e}")
         
         # Update tides_spec
-        self.update_tides_spec(str(tides_id), metadata, spectrum_file, thumbnail_file)
+        self.update_tides_spec(str(tides_id), tides_specid, metadata, spectrum_file, thumbnail_file)
         
         self.logger.info(f"Saved {'stacked' if stacked else 'single'} spectrum: {spectrum_file}")
     
@@ -1195,10 +1194,10 @@ class DataIngestion(Module):
             return None
 
     # Update or insert a spectrum record for the given tides_id
-    def update_tides_spec(self, tides_id: str, metadata: Dict[str, Any], spectrum_file: str, thumbnail_file: str):
+    def update_tides_spec(self, tides_id: str, tides_specid: int, metadata: Dict[str, Any], spectrum_file: str, thumbnail_file: str):
         """
         Upsert into public.tides_spec using the provided schema. Stores full metadata in additional_info
-        and maps core fields to dedicated columns.
+        and maps core fields to dedicated columns. Uses tides_specid as PRIMARY KEY.
         """
         # Prepare values with safe typing
         def _as_float(x):
@@ -1213,7 +1212,7 @@ class DataIngestion(Module):
             except Exception:
                 return None
 
-        qmost_id = _as_int(metadata.get('QMOST_ID'))
+        tides_specid_int = _as_int(tides_specid)
         tides_id_int = _as_int(tides_id or metadata.get('TIDES_ID'))
         sn_type = (metadata.get('TYPE') if metadata.get('TYPE') is not None else None)
 
@@ -1253,11 +1252,11 @@ class DataIngestion(Module):
                     cur.execute(
                         """
                         INSERT INTO tides_spec (
-                            qmost_id, tides_id, sn_type, obs_date, obs_mjd,
+                            tides_specid, tides_id, sn_type, obs_date, obs_mjd,
                             snr, seeing, sky_brightness, filepath, version, additional_info
                         )
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (qmost_id) DO UPDATE SET
+                        ON CONFLICT (tides_specid) DO UPDATE SET
                             tides_id = EXCLUDED.tides_id,
                             sn_type = EXCLUDED.sn_type,
                             obs_date = EXCLUDED.obs_date,
@@ -1270,12 +1269,12 @@ class DataIngestion(Module):
                             additional_info = EXCLUDED.additional_info;
                         """,
                         (
-                            qmost_id, tides_id_int, sn_type, obs_date_dt, obs_mjd,
+                            tides_specid_int, tides_id_int, sn_type, obs_date_dt, obs_mjd,
                             snr, seeing, sky_brightness, filepath, version, additional_info_json
                         )
                     )
             if hasattr(self, "logger"):
-                self.logger.info(f"[ingestion] Upserted tides_spec (qmost_id={qmost_id}, tides_id={tides_id_int})")
+                self.logger.info(f"[ingestion] Upserted tides_spec (tides_specid={tides_specid_int}, tides_id={tides_id_int})")
         except Exception as e:
             if hasattr(self, "logger"):
                 self.logger.error(f"[ingestion] tides_spec upsert failed: {e}")
