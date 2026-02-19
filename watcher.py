@@ -23,6 +23,7 @@ PIPELINE_API = os.getenv("PIPELINE_API", "http://pipeline:8001")
 DEBOUNCE_SEC = float(os.getenv("DEBOUNCE_SEC", "3.0"))
 USE_POLLING = os.getenv("WATCHER_POLLING", "").lower() in ("1", "true", "yes")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+NIGHT_CUTOFF_DATE = os.getenv("NIGHT_CUTOFF_DATE", "20260120")  # Ignore nights before this date to prevent test data leakage
 
 def setup_logging():
     logging.basicConfig(
@@ -35,6 +36,17 @@ def setup_logging():
         sys.stdout.reconfigure(line_buffering=True)  # Python 3.7+
     except Exception:
         pass
+
+def is_night_before_cutoff(night: str) -> bool:
+    """Check if night date is before the cutoff date to prevent test data processing."""
+    try:
+        # Ensure night is in YYYYMMDD format
+        night_digits = re.sub(r'[^0-9]', '', night)
+        if len(night_digits) == 8 and night_digits.isdigit():
+            return int(night_digits) < int(NIGHT_CUTOFF_DATE)
+        return False
+    except Exception:
+        return False
 
 def info_from_path(path: str):
     rel = os.path.relpath(path, DELIVERIES_DIR)
@@ -107,6 +119,10 @@ class MECHandler(FileSystemEventHandler):
     def _schedule(self, path: str):
         env, n = info_from_path(path)
         if env and n:
+            # Check if night is before cutoff date (to prevent test data processing)
+            if is_night_before_cutoff(n):
+                logger.info(f"Ignoring night {n} (before cutoff {NIGHT_CUTOFF_DATE}) from file {path}")
+                return
             key = (env, n)
             logger.info(f"Scheduled env {env} night {n} for file {path}")
             self._pending[key] = time.time()

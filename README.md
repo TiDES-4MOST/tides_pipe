@@ -24,6 +24,9 @@ DB_SSLMODE=require
 # Classifier services (inside compose network or external)
 CLASSIFIER_SNID_URL=http://snid_api:8000
 CLASSIFIER_NGSF_URL=http://ngsf_api:8000
+
+# Optional: Ignore nights before this date to prevent test data processing (default: 20260120)
+NIGHT_CUTOFF_DATE=20260120
 ```
 
 2) Ensure you have the expected directory layout:

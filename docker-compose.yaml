@@ -52,6 +52,7 @@ services:
       PYTHONUNBUFFERED: "1"
       LOG_LEVEL: INFO
       WATCHER_POLLING: "1"   # enable if /mnt/data is NFS/CIFS/remote
+      NIGHT_CUTOFF_DATE: ${NIGHT_CUTOFF_DATE:-20260120}  # Ignore nights before this date (format: YYYYMMDD)
     volumes:
       - /mnt/data/deliveries:/data/deliveries:rw
     depends_on:
