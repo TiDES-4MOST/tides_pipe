@@ -323,13 +323,13 @@ class SnidHandler:
                         try:
                             cur.execute(
                                 """
-                                INSERT INTO pipeline_classification_global (tides_specid, classification, probability, z, phase, notes)
-                                VALUES (%s, %s, %s, %s, %s, 'snid')
+                                INSERT INTO pipeline_classification_global (tides_specid, tides_id, sn_type, probability, version, z, phase, notes)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                                 ON CONFLICT (tides_specid)
-                                DO UPDATE SET classification = EXCLUDED.classification, probability = EXCLUDED.probability, 
-                                              z = EXCLUDED.z, phase = EXCLUDED.phase, notes = EXCLUDED.notes
+                                DO UPDATE SET sn_type = EXCLUDED.sn_type, probability = EXCLUDED.probability, 
+                                              version = EXCLUDED.version, z = EXCLUDED.z, phase = EXCLUDED.phase, notes = EXCLUDED.notes
                                 """,
-                                (int(tides_specid), sn_type, rlap, z, phase)
+                                (int(tides_specid), int(tides_id), sn_type, rlap, version, z, phase, "snid classification")
                             )
                             self.log.info(f"[snid] Saved to pipeline_classification_global (tides_specid={tides_specid})")
                         except Exception as e:
