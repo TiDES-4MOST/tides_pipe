@@ -23,7 +23,7 @@ def snid_params_from_config(config: Optional[dict], overrides: Optional[Dict[str
     params = {
         "wmin": float(g("wmin", 4000.0)),
         "wmax": float(g("wmax", 9000.0)),
-        "zmin": float(g("zmin", 0.1)),
+        "zmin": float(g("zmin", 0.0)),
         "zmax": float(g("zmax", 1.2)),
         "emclip": g("emclip", None),
         "emwid": int(g("emwid", 40)),
