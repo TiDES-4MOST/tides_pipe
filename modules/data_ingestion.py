@@ -544,6 +544,7 @@ class DataIngestion(Module):
                             spectra_night_dir=spectra_night_dir,
                             fibinfodat=fibinfodat,
                             primary_header=group[0]['primary_header'],
+                            obj_uid=group[0]['obj_uid'],
                             stacked=True,
                             source_specuids=[s['specuid'] for s in group if s['specuid']]
                         )
@@ -614,6 +615,7 @@ class DataIngestion(Module):
             spectra_night_dir=spectra_night_dir,
             fibinfodat=fibinfodat,
             primary_header=spec['primary_header'],
+            obj_uid=spec['obj_uid'],
             stacked=False,
             source_specuids=None
         )
@@ -630,7 +632,7 @@ class DataIngestion(Module):
     def _save_and_update_spectrum(
         self, tides_specid, tides_id, wave, flux, ivar, qual,
         metadata, fiber_meta, obrow, master_info, ra, dec,
-        spectra_night_dir, fibinfodat, primary_header,
+        spectra_night_dir, fibinfodat, primary_header, obj_uid=None,
         stacked=False, source_specuids=None
     ):
         """
@@ -650,8 +652,8 @@ class DataIngestion(Module):
         # master_info already has name from tides_master query during ID resolution
         name_for_file = master_info.get('name') if master_info else None
         if not name_for_file:
-            # Fallback to obj_uid from metadata
-            name_for_file = metadata.get('OBJ_UID', 'UNKNOWN')
+            # Fallback to obj_uid passed from caller
+            name_for_file = str(obj_uid) if obj_uid is not None else 'UNKNOWN'
         
         # Extract date from metadata (OB_DATE format: 'YYYY-MM-DD' or similar)
         from datetime import datetime
