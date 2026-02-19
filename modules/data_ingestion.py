@@ -528,7 +528,7 @@ class DataIngestion(Module):
                         
                         self.logger.info(f"Stacked metadata: DATE-OBS={earliest_date}, TEXPTIME={total_texptime}s, N_spectra={len(group)}")
                         # Save stacked spectrum
-                        self._save_and_update_spectrum(
+                        spectrum_file = self._save_and_update_spectrum(
                             tides_specid=tides_specid,
                             tides_id=obj_id,
                             wave=wave_stacked,
@@ -547,18 +547,12 @@ class DataIngestion(Module):
                             stacked=True,
                             source_specuids=[s['specuid'] for s in group if s['specuid']]
                         )
-                        # Build filename
-                        name_for_file = group[0]['master_info'].get('name') if group[0].get('master_info') else None
-                        if not name_for_file:
-                            name_for_file = group[0].get('obj_uid', 'UNKNOWN')
-                        date_str = group[0]['obs_date'].strftime('%Y%m%d') if group[0].get('obs_date') else 'NODATE'
-                        filename = f"qmost_{name_for_file}_{date_str}_{tides_specid}.txt"
                         
                         self.logger.info(f"Stacked spectrum for OBJ_UID {grouping_key}" f" saved with tides_specid {tides_specid}, adding to results")
                         obj_results.append({
                             'tides_id': obj_id,
                             'tides_specid': tides_specid,
-                            'filepath': os.path.join(spectra_night_dir, filename),
+                            'filepath': spectrum_file,
                             'is_temp_id': any(spec.get('is_temp_id', False) for spec in group)
                         })
                     else:
@@ -604,7 +598,7 @@ class DataIngestion(Module):
                 tides_specid = zlib.crc32(base.encode('utf-8')) & 0x7FFFFFFF
         
         # Save single spectrum
-        self._save_and_update_spectrum(
+        spectrum_file = self._save_and_update_spectrum(
             tides_specid=tides_specid,
             tides_id=obj_id,
             wave=spec['wavelength'],
@@ -624,17 +618,10 @@ class DataIngestion(Module):
             source_specuids=None
         )
         
-        # Build filename
-        name_for_file = spec['master_info'].get('name') if spec.get('master_info') else None
-        if not name_for_file:
-            name_for_file = spec.get('obj_uid', 'UNKNOWN')
-        date_str = spec['obs_date'].strftime('%Y%m%d') if spec.get('obs_date') else 'NODATE'
-        filename = f"qmost_{name_for_file}_{date_str}_{tides_specid}.txt"
-        
         obj_results.append({
             'tides_id': obj_id,
             'tides_specid': tides_specid,
-            'filepath': os.path.join(spectra_night_dir, filename),
+            'filepath': spectrum_file,
             'is_temp_id': spec.get('is_temp_id', False)
         })
 
@@ -660,6 +647,7 @@ class DataIngestion(Module):
             metadata['N_STACKED'] = len(source_specuids)
         
         # Build filename with name and date
+        # master_info already has name from tides_master query during ID resolution
         name_for_file = master_info.get('name') if master_info else None
         if not name_for_file:
             # Fallback to obj_uid from metadata
@@ -784,6 +772,12 @@ class DataIngestion(Module):
         self.update_tides_spec(str(tides_id), tides_specid, metadata, spectrum_file, thumbnail_file)
         
         self.logger.info(f"Saved {'stacked' if stacked else 'single'} spectrum: {spectrum_file}")
+        
+        return spectrum_file
+        
+        return spectrum_file
+        
+        return spectrum_file
     
     # --------- Stacking helper (DEPRECATED - now handled in process_file) ---------
     
