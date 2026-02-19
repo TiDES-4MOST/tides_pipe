@@ -215,51 +215,7 @@ class SnidHandler:
         except Exception:
             return None
 
-    def _save_result_db(self, tides_id: str, night: str, result: Dict[str, Any], api_resp: Dict[str, Any] | None):
-        conn = self._db_connect()
-        if not conn:
-            return
-        table = ((self.config.get("snid") or {}).get("db") or {}).get("table", "snid_results")
-        payload = {
-            "status": result.get("status"),
-            "verdict": result.get("verdict"),
-            "best_template": result.get("best_template"),
-            "redshift": result.get("redshift"),
-            "rlap": result.get("rlap"),
-            "sn": result.get("sn"),
-            "phase": result.get("phase"),
-            "result_file": result.get("result_file"),
-            "out_dir": result.get("out_dir"),
-            "api_resp": api_resp or {},
-        }
-        try:
-            with conn:
-                with conn.cursor() as cur:
-                    # Ensure table exists (lightweight safety)
-                    cur.execute(f"""
-                        CREATE TABLE IF NOT EXISTS {table} (
-                            tides_id      TEXT NOT NULL,
-                            night         TEXT NOT NULL,
-                            classifier    TEXT NOT NULL DEFAULT 'snid',
-                            payload       JSONB NOT NULL,
-                            created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                            updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                            PRIMARY KEY (tides_id, night, classifier)
-                        );
-                    """)
-                    # Upsert current payload
-                    cur.execute(
-                        f"""
-                        INSERT INTO {table} (tides_id, night, classifier, payload)
-                        VALUES (%s, %s, 'snid', %s)
-                        ON CONFLICT (tides_id, night, classifier)
-                        DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW();
-                        """,
-                        (str(tides_id), str(night), json.dumps(payload)),
-                    )
-            self.log.info(f"[snid] Saved result to DB table {table} for tides_id={tides_id}, night={night}")
-        except Exception as e:
-            self.log.warning(f"[snid] Failed to save result to DB: {e}")
+
 
     def _save_result_unified(self, tides_id: str, tides_specid: Optional[int], night: str, result: Dict[str, Any], api_resp: Dict[str, Any] | None):
         """Unified per-spectrum classification write.
@@ -268,32 +224,23 @@ class SnidHandler:
         conn = self._db_connect()
         if not conn:
             return
-        # Extract classification fields
-        sn_type = (
-            result.get('verdict') or
-            ((api_resp or {}).get('data') or {}).get('table', [{}])[0].get('typing')
-        )
-        # rlap
-        rlap = result.get('rlap')
-        if rlap is None:
-            try:
-                rlap = ((api_resp or {}).get('data') or {}).get('table', [{}])[0].get('rlap')
-            except Exception:
-                rlap = None
-        if isinstance(rlap, (list, tuple)):
-            rlap = rlap[0] if rlap else None
-        try:
-            rlap = float(rlap) if rlap is not None else None
-        except Exception:
-            rlap = None
-        # z and phase
+        
+        # Helper to safely convert to float
         def _as_float(x):
             try:
                 return float(x) if x is not None else None
             except Exception:
                 return None
-        z = _as_float(result.get('redshift'))
-        phase = _as_float(result.get('phase'))
+        
+        # Extract best match from API response (first entry in table)
+        best_match = ((api_resp or {}).get('data') or {}).get('table', [{}])[0] if api_resp else {}
+        
+        # Extract classification fields from API response
+        sn_type = best_match.get('typing') or result.get('verdict')
+        rlap = _as_float(best_match.get('rlap') or result.get('rlap'))
+        z = _as_float(best_match.get('z') or result.get('redshift'))
+        zerr = _as_float(best_match.get('zerr'))
+        phase = _as_float(best_match.get('age') or result.get('phase'))
         version = ((self.config.get("snid") or {}).get("defaults") or {}).get("version") or ""
 
         # Try per-spectrum upsert first (if schema supports tides_specid)
@@ -307,18 +254,18 @@ class SnidHandler:
                         cur.execute(
                             """
                             UPDATE pipeline_classification_snid
-                            SET tides_id = %s, sn_type = %s, probability = %s, version = %s, z = %s, phase = %s, results_file = %s
+                            SET tides_id = %s, sn_type = %s, probability = %s, version = %s, z = %s, zerr = %s, phase = %s, results_file = %s
                             WHERE tides_specid = %s
                             """,
-                            (int(tides_id), sn_type, rlap, version, z, phase, results_file, int(tides_specid))
+                            (int(tides_id), sn_type, rlap, version, z, zerr, phase, results_file, int(tides_specid))
                         )
                         if cur.rowcount == 0:
                             cur.execute(
                                 """
-                                INSERT INTO pipeline_classification_snid (tides_specid, tides_id, sn_type, probability, version, z, phase, results_file)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                INSERT INTO pipeline_classification_snid (tides_specid, tides_id, sn_type, probability, version, z, zerr, phase, results_file)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                                 """,
-                                (int(tides_specid), int(tides_id), sn_type, rlap, version, z, phase, results_file)
+                                (int(tides_specid), int(tides_id), sn_type, rlap, version, z, zerr, phase, results_file)
                             )
                         self.log.info(f"[snid] Upserted per-spectrum classification (tides_specid={tides_specid}, tides_id={tides_id})")
                         
@@ -326,8 +273,8 @@ class SnidHandler:
                         try:
                             cur.execute(
                                 """
-                                INSERT INTO pipeline_classification_global (tides_specid, tides_id, sn_type, probability, version, z, phase, notes)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                INSERT INTO pipeline_classification_global (tides_specid, tides_id, sn_type, probability, version, z, zerr, phase, notes)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                                 ON CONFLICT (tides_specid)
                                 DO UPDATE SET 
                                     tides_id = EXCLUDED.tides_id,
@@ -335,10 +282,11 @@ class SnidHandler:
                                     probability = EXCLUDED.probability, 
                                     version = EXCLUDED.version, 
                                     z = EXCLUDED.z, 
+                                    zerr = EXCLUDED.zerr,
                                     phase = EXCLUDED.phase, 
                                     notes = EXCLUDED.notes
                                 """,
-                                (int(tides_specid), int(tides_id), sn_type, rlap, version, z, phase, "snid classification")
+                                (int(tides_specid), int(tides_id), sn_type, rlap, version, z, zerr, phase, "snid classification")
                             )
                             self.log.info(f"[snid] Saved to pipeline_classification_global (tides_specid={tides_specid})")
                         except Exception as e:
@@ -355,18 +303,18 @@ class SnidHandler:
                     cur.execute(
                         """
                         UPDATE pipeline_classification_snid
-                        SET sn_type = %s, probability = %s, version = %s, z = %s, phase = %s
+                        SET sn_type = %s, probability = %s, version = %s, z = %s, zerr = %s, phase = %s
                         WHERE tides_id = %s
                         """,
-                        (sn_type, rlap, version, z, phase, int(tides_id))
+                        (sn_type, rlap, version, z, zerr, phase, int(tides_id))
                     )
                     if cur.rowcount == 0:
                         cur.execute(
                             """
-                            INSERT INTO pipeline_classification_snid (tides_id, sn_type, probability, version, z, phase)
-                            VALUES (%s, %s, %s, %s, %s, %s)
+                            INSERT INTO pipeline_classification_snid (tides_id, sn_type, probability, version, z, zerr, phase)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
                             """,
-                            (int(tides_id), sn_type, rlap, version, z, phase)
+                            (int(tides_id), sn_type, rlap, version, z, zerr, phase)
                         )
             self.log.info(f"[snid] Upserted legacy classification (tides_id={tides_id})")
         except Exception as e:
