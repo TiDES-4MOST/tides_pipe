@@ -319,15 +319,21 @@ class SnidHandler:
                             )
                         self.log.info(f"[snid] Upserted per-spectrum classification (tides_specid={tides_specid}, tides_id={tides_id})")
                         
-                        # Also save to pipeline_classification_global
+                        # Also save to pipeline_classification_global (now has UNIQUE constraint on tides_specid)
                         try:
                             cur.execute(
                                 """
                                 INSERT INTO pipeline_classification_global (tides_specid, tides_id, sn_type, probability, version, z, phase, notes)
                                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                                 ON CONFLICT (tides_specid)
-                                DO UPDATE SET sn_type = EXCLUDED.sn_type, probability = EXCLUDED.probability, 
-                                              version = EXCLUDED.version, z = EXCLUDED.z, phase = EXCLUDED.phase, notes = EXCLUDED.notes
+                                DO UPDATE SET 
+                                    tides_id = EXCLUDED.tides_id,
+                                    sn_type = EXCLUDED.sn_type, 
+                                    probability = EXCLUDED.probability, 
+                                    version = EXCLUDED.version, 
+                                    z = EXCLUDED.z, 
+                                    phase = EXCLUDED.phase, 
+                                    notes = EXCLUDED.notes
                                 """,
                                 (int(tides_specid), int(tides_id), sn_type, rlap, version, z, phase, "snid classification")
                             )
