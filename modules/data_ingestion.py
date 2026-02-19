@@ -547,11 +547,18 @@ class DataIngestion(Module):
                             stacked=True,
                             source_specuids=[s['specuid'] for s in group if s['specuid']]
                         )
+                        # Build filename
+                        name_for_file = group[0]['master_info'].get('name') if group[0].get('master_info') else None
+                        if not name_for_file:
+                            name_for_file = group[0].get('obj_uid', 'UNKNOWN')
+                        date_str = group[0]['obs_date'].strftime('%Y%m%d') if group[0].get('obs_date') else 'NODATE'
+                        filename = f"qmost_{name_for_file}_{date_str}_{tides_specid}.txt"
+                        
                         self.logger.info(f"Stacked spectrum for OBJ_UID {grouping_key}" f" saved with tides_specid {tides_specid}, adding to results")
                         obj_results.append({
                             'tides_id': obj_id,
                             'tides_specid': tides_specid,
-                            'filepath': os.path.join(spectra_night_dir, f"{tides_specid}_spectrum.txt"),
+                            'filepath': os.path.join(spectra_night_dir, filename),
                             'is_temp_id': any(spec.get('is_temp_id', False) for spec in group)
                         })
                     else:
@@ -617,10 +624,17 @@ class DataIngestion(Module):
             source_specuids=None
         )
         
+        # Build filename
+        name_for_file = spec['master_info'].get('name') if spec.get('master_info') else None
+        if not name_for_file:
+            name_for_file = spec.get('obj_uid', 'UNKNOWN')
+        date_str = spec['obs_date'].strftime('%Y%m%d') if spec.get('obs_date') else 'NODATE'
+        filename = f"qmost_{name_for_file}_{date_str}_{tides_specid}.txt"
+        
         obj_results.append({
             'tides_id': obj_id,
             'tides_specid': tides_specid,
-            'filepath': os.path.join(spectra_night_dir, f"{tides_specid}_spectrum.txt"),
+            'filepath': os.path.join(spectra_night_dir, filename),
             'is_temp_id': spec.get('is_temp_id', False)
         })
 
@@ -645,8 +659,35 @@ class DataIngestion(Module):
             metadata['STACKED_SPECUIDS'] = source_specuids
             metadata['N_STACKED'] = len(source_specuids)
         
+        # Build filename with name and date
+        name_for_file = master_info.get('name') if master_info else None
+        if not name_for_file:
+            # Fallback to obj_uid from metadata
+            name_for_file = metadata.get('OBJ_UID', 'UNKNOWN')
+        
+        # Extract date from metadata (OB_DATE format: 'YYYY-MM-DD' or similar)
+        from datetime import datetime
+        date_str = 'NODATE'
+        if 'OB_DATE' in metadata:
+            try:
+                # Parse various date formats
+                date_val = metadata['OB_DATE']
+                if isinstance(date_val, str):
+                    # Try common formats
+                    for fmt in ['%Y-%m-%d', '%Y-%m-%dT%H:%M:%S', '%Y%m%d']:
+                        try:
+                            dt = datetime.strptime(date_val.split('.')[0], fmt)
+                            date_str = dt.strftime('%Y%m%d')
+                            break
+                        except ValueError:
+                            continue
+            except Exception:
+                pass
+        
+        filename = f"qmost_{name_for_file}_{date_str}_{tides_specid}.txt"
+        
         # File paths
-        spectrum_file = os.path.join(spectra_night_dir, f"{tides_specid}_spectrum.txt")
+        spectrum_file = os.path.join(spectra_night_dir, filename)
         metadata_file = os.path.join(spectra_night_dir, f"{tides_id}_metadata.txt")
         thumbnail_file = os.path.join(spectra_night_dir, f"{tides_specid}_thumbnail.png")
         
