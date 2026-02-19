@@ -100,10 +100,10 @@ class SnidHandler:
         self.log = log
         self._db_conn = None
 
-    def _target_dir(self, night: str, tides_id: Union[str, int]) -> str:
+    def _target_dir(self, night: str, tides_specid: Union[str, int]) -> str:
         root = SNID_API_OUT_ROOT
         night_dir = os.path.join(root, str(night))
-        obj_dir = os.path.join(night_dir, str(tides_id))
+        obj_dir = os.path.join(night_dir, str(tides_specid))
         target_dir = os.path.join(obj_dir, "target")  # some APIs copy inputs here
 
         for path in (root, night_dir, obj_dir, target_dir):
@@ -301,21 +301,24 @@ class SnidHandler:
             with conn:
                 with conn.cursor() as cur:
                     if tides_specid is not None:
+                        # Get results_file path
+                        results_file = result.get('result_file')
+                        
                         cur.execute(
                             """
                             UPDATE pipeline_classification_snid
-                            SET tides_id = %s, sn_type = %s, probability = %s, version = %s, z = %s, phase = %s
+                            SET tides_id = %s, sn_type = %s, probability = %s, version = %s, z = %s, phase = %s, results_file = %s
                             WHERE tides_specid = %s
                             """,
-                            (int(tides_id), sn_type, rlap, version, z, phase, int(tides_specid))
+                            (int(tides_id), sn_type, rlap, version, z, phase, results_file, int(tides_specid))
                         )
                         if cur.rowcount == 0:
                             cur.execute(
                                 """
-                                INSERT INTO pipeline_classification_snid (tides_specid, tides_id, sn_type, probability, version, z, phase)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                INSERT INTO pipeline_classification_snid (tides_specid, tides_id, sn_type, probability, version, z, phase, results_file)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                                 """,
-                                (int(tides_specid), int(tides_id), sn_type, rlap, version, z, phase)
+                                (int(tides_specid), int(tides_id), sn_type, rlap, version, z, phase, results_file)
                             )
                         self.log.info(f"[snid] Upserted per-spectrum classification (tides_specid={tides_specid}, tides_id={tides_id})")
                         
@@ -383,9 +386,15 @@ class SnidHandler:
             tides_id = tides_id or inf_id
         if not night or not tides_id:
             raise ValueError("Unable to infer night/tides_id; provide them explicitly")
+        
+        # Resolve tides_specid early if not provided
+        if tides_specid is None:
+            tides_specid = self._resolve_tides_specid(spectrum_path, tides_id, night)
+        if not tides_specid:
+            raise ValueError(f"Unable to resolve tides_specid for {spectrum_path}")
 
-        out_dir = self._target_dir(str(night), str(tides_id))
-        self.log.info(f"[snid] out_dir={out_dir}")
+        out_dir = self._target_dir(str(night), str(tides_specid))
+        self.log.info(f"[snid] out_dir={out_dir} (tides_specid={tides_specid})")
 
         # Prefer params provided by manager; fall back to config defaults only if missing
         if snid_params is None:
@@ -420,9 +429,6 @@ class SnidHandler:
 
         # Unified per-spectrum DB write
         try:
-            # Use passed tides_specid or resolve it as fallback
-            if tides_specid is None:
-                tides_specid = self._resolve_tides_specid(spectrum_path, tides_id, night)
             self._save_result_unified(str(tides_id), tides_specid, str(night), result, api_resp)
         except Exception as e:
             self.log.warning(f"[snid] unified save failed: {e}")
