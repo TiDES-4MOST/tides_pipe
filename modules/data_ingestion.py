@@ -249,6 +249,9 @@ class DataIngestion(Module):
                         self.logger.warning("Could not resolve tides_id for spectrum; skipping.")
                         continue
                     
+                    # Track if this is a TEMP ID (used later to skip classification in test mode)
+                    is_temp_id = self._last_was_temp
+                    
                     # Extract OBJ_UID and SPECUID from MEC FIBMETATAB
                     def _mget(row, key, default=None):
                         try:
@@ -369,7 +372,7 @@ class DataIngestion(Module):
 
                     # Expose a canonical EXPOSURE_TIME_S in metadata when available
                     try:
-                        exptime = metadata.get('TEXPTIME')
+                        exptime = metadata.get('OB_TINT_SUM_S')
                         if exptime is not None:
                             # Ensure it’s a plain float/int value in seconds
                             if isinstance(exptime, (list, tuple)):
@@ -412,7 +415,8 @@ class DataIngestion(Module):
                         'ra': ra_val,
                         'dec': dec_val,
                         'primary_header': primary_header,
-                        'counter': counter
+                        'counter': counter,
+                        'is_temp_id': is_temp_id
                     }
                     
                     # Group by OBJ_UID for stacking (or use tides_id as fallback key)
@@ -520,6 +524,7 @@ class DataIngestion(Module):
                         # Update metadata with summed exposure time
                         if total_texptime > 0:
                             stacked_metadata['OB_TINT_SUM_S'] = total_texptime
+                            stacked_metadata['EXPOSURE_TIME_S'] = total_texptime
                         
                         self.logger.info(f"Stacked metadata: DATE-OBS={earliest_date}, TEXPTIME={total_texptime}s, N_spectra={len(group)}")
                         # Save stacked spectrum
@@ -546,7 +551,8 @@ class DataIngestion(Module):
                         obj_results.append({
                             'tides_id': obj_id,
                             'tides_specid': tides_specid,
-                            'filepath': os.path.join(spectra_night_dir, f"{tides_specid}_spectrum.txt")
+                            'filepath': os.path.join(spectra_night_dir, f"{tides_specid}_spectrum.txt"),
+                            'is_temp_id': any(spec.get('is_temp_id', False) for spec in group)
                         })
                     else:
                         # Single spectrum - use helper method
@@ -614,7 +620,8 @@ class DataIngestion(Module):
         obj_results.append({
             'tides_id': obj_id,
             'tides_specid': tides_specid,
-            'filepath': os.path.join(spectra_night_dir, f"{tides_specid}_spectrum.txt")
+            'filepath': os.path.join(spectra_night_dir, f"{tides_specid}_spectrum.txt"),
+            'is_temp_id': spec.get('is_temp_id', False)
         })
 
     # --------- Spectrum saving helper ---------

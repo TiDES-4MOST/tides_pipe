@@ -276,10 +276,18 @@ class PipelineManager:
         enabled_classifiers = classification_config.get('enabled_classifiers', ['snid', 'ngsf'])
         logger.info(f"[classification_api] Enabled classifiers: {enabled_classifiers}")
         
+        # Check if we should skip TEMP IDs in test mode
+        test_mode = os.getenv('TEST', '').lower() == 'true'
+        
         for tid in obj_names or []:
             spec_info = spectrum_map.get(str(tid))
             if not spec_info:
                 logger.warning(f"[classification_api] No spectrum info for {tid}")
+                continue
+            
+            # Skip TEMP IDs in test mode (no match in tides_master)
+            if test_mode and spec_info.get('is_temp_id', False):
+                logger.info(f"[classification_api] Skipping TEMP ID {tid} in test mode (no tides_master match)")
                 continue
             
             spath = spec_info['filepath']
