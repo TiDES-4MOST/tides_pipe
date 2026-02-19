@@ -32,7 +32,7 @@ snid:
   defaults:
     wmin: 4000
     wmax: 9000
-    zmin: 0.1
+    zmin: 0.
     zmax: 1.2
     emclip:
     emwid: 40
