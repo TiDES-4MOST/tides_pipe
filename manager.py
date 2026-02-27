@@ -16,6 +16,7 @@ from tides_pipe.modules.classifiers.snid_handler import SnidHandler
 from tides_pipe.modules.classifiers.snid_defaults import snid_params_from_config
 from tides_pipe.modules.classifiers.client import classify_snid_async, classify_ngsf_async
 from tides_pipe.modules.classifiers.classification_store import save_result
+from tides_pipe.modules.classifiers.m25_combiner import combine as m25_combine, store_global as m25_store_global
 from tides_pipe.utils.paths import spectra_night_dir as util_spectra_night_dir, spectrum_path as util_spectrum_path
 from tides_pipe.utils.slack import send_slack_message
 
@@ -385,6 +386,43 @@ class PipelineManager:
         logger.info("Clearing pipeline done signals")
         # You can add additional logic here like removing done files
 
+    def _run_m25_combination(self, classification_results: list[dict], logger: logging.Logger) -> None:
+        """
+        Run the Milligan+25 combiner for each object that has at least one
+        classifier result and upsert the combined output to
+        pipeline_classification_global.
+
+        classification_results: list of dicts produced by _run_snid_classification:
+            [{obj_id, tides_specid, snid: {...}, ngsf: {...}, dash: {...}}]
+        Each classifier key is optional — M25 handles missing classifiers gracefully.
+        """
+        conn = self._get_db_connection()
+        if not conn:
+            logger.warning("[m25] No DB connection; skipping M25 combination")
+            return
+
+        version = ((self.config.get("snid") or {}).get("defaults") or {}).get("version") or ""
+
+        for item in classification_results:
+            obj_id      = item.get("obj_id")
+            tides_specid = item.get("tides_specid")
+            try:
+                combined = m25_combine(
+                    snid=item.get("snid"),
+                    ngsf=item.get("ngsf"),
+                    dash=item.get("dash"),
+                )
+                logger.info(
+                    f"[m25] obj={obj_id} specid={tides_specid} "
+                    f"→ {combined['sn_type']} ({combined.get('probability')}) | {combined['notes']}"
+                )
+                m25_store_global(
+                    conn, int(obj_id), tides_specid, combined,
+                    version=version, logger=logger
+                )
+            except Exception as e:
+                logger.error(f"[m25] Failed for obj={obj_id}: {e}", exc_info=True)
+
     # Defaults aligned with your Django SnidParamsForm
     def _snid_default_params(self) -> dict:
         return snid_params_from_config(self.config)
@@ -503,6 +541,7 @@ class PipelineManager:
                         continue
                     results = self._run_snid_classification(self.current_night, obj_names, spectrum_map, logger)
                     logger.info(f"[{name}] SNID classified {len(results)} objects")
+                    self._run_m25_combination(results, logger)
                     self.set_module_done(name, True)
                     continue
 
@@ -590,6 +629,7 @@ class PipelineManager:
 
         results = self._run_snid_classification(self.current_night, obj_names, spectrum_map, lg)
         lg.info(f"[classify_night] SNID finished for {len(results)} objects")
+        self._run_m25_combination(results, lg)
         self.set_module_done("classification_api", True)
         return {"night": night, "count": len(results), "results": results}
 

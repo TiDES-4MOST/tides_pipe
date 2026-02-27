@@ -268,30 +268,7 @@ class SnidHandler:
                                 (int(tides_specid), int(tides_id), sn_type, rlap, version, z, zerr, phase, results_file)
                             )
                         self.log.info(f"[snid] Upserted per-spectrum classification (tides_specid={tides_specid}, tides_id={tides_id})")
-                        
-                        # Also save to pipeline_classification_global (now has UNIQUE constraint on tides_specid)
-                        try:
-                            cur.execute(
-                                """
-                                INSERT INTO pipeline_classification_global (tides_specid, tides_id, sn_type, probability, version, z, zerr, phase, notes)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                ON CONFLICT (tides_specid)
-                                DO UPDATE SET 
-                                    tides_id = EXCLUDED.tides_id,
-                                    sn_type = EXCLUDED.sn_type, 
-                                    probability = EXCLUDED.probability, 
-                                    version = EXCLUDED.version, 
-                                    z = EXCLUDED.z, 
-                                    zerr = EXCLUDED.zerr,
-                                    phase = EXCLUDED.phase, 
-                                    notes = EXCLUDED.notes
-                                """,
-                                (int(tides_specid), int(tides_id), sn_type, rlap, version, z, zerr, phase, "snid classification")
-                            )
-                            self.log.info(f"[snid] Saved to pipeline_classification_global (tides_specid={tides_specid})")
-                        except Exception as e:
-                            self.log.warning(f"[snid] Failed to save to pipeline_classification_global: {e}")
-                        
+                        # pipeline_classification_global is written by m25_combiner after all classifiers finish
                         return
         except Exception as e:
             # Likely schema lacks tides_specid; fall back to tides_id-only write
