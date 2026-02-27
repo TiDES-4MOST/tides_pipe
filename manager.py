@@ -14,6 +14,8 @@ import time
 
 from tides_pipe.modules.classifiers.snid_handler import SnidHandler
 from tides_pipe.modules.classifiers.snid_defaults import snid_params_from_config
+from tides_pipe.modules.classifiers.ngsf_handler import NgsfHandler
+from tides_pipe.modules.classifiers.ngsf_defaults import ngsf_params_from_config
 from tides_pipe.modules.classifiers.client import classify_snid_async, classify_ngsf_async
 from tides_pipe.modules.classifiers.classification_store import save_result
 from tides_pipe.modules.classifiers.m25_combiner import combine as m25_combine, store_global as m25_store_global
@@ -91,7 +93,8 @@ class PipelineManager:
         self.current_night: str = ""
         self._status_conn = None
         self._db_conn = None  # Reusable DB connection
-        self.snid = SnidHandler()
+        self.snid = SnidHandler(config=self.config)
+        self.ngsf = NgsfHandler(config=self.config)
 
     def _get_db_connection(self):
         """Get or create a reusable DB connection."""
@@ -302,7 +305,10 @@ class PipelineManager:
             if 'snid' in enabled_classifiers:
                 tasks.append(tagged("snid", tid_int, classify_snid_async(tid_int, spath, snid_params or {})))
             if 'ngsf' in enabled_classifiers:
-                tasks.append(tagged("ngsf", tid_int, classify_ngsf_async(tid_int, spath, ngsf_params or {})))
+                from tides_pipe.modules.classifiers.client import NGSF_OUT_ROOT
+                ngsf_out_dir = os.path.join(NGSF_OUT_ROOT, str(self.current_night), str(tides_specid))
+                os.makedirs(ngsf_out_dir, mode=0o777, exist_ok=True)
+                tasks.append(tagged("ngsf", tid_int, classify_ngsf_async(tid_int, spath, ngsf_out_dir, ngsf_params or {})))
 
         classified_ok = 0
         ok = True
@@ -437,27 +443,62 @@ class PipelineManager:
             return obj_names[:limit]
         return obj_names
 
-    def _run_snid_classification(self, night: str, obj_names: list, spectrum_map: dict, logger) -> list[dict]:
+    def _ngsf_default_params(self) -> dict:
+        return ngsf_params_from_config(self.config)
+
+    def _run_classifiers(self, night: str, obj_names: list, spectrum_map: dict, logger) -> list[dict]:
+        """Run SNID then NGSF for every object and return a list of per-object
+        dicts ready for M25 combination.
+
+        Each entry: {obj_id, tides_specid, snid: {...}, ngsf: {...}}
+        Both classifier keys are always present; failed classifiers get
+        {"status": "error"} so M25 can degrade gracefully.
+        """
         obj_names = self._limit_for_test([str(x) for x in obj_names], logger)
-        params = self._snid_default_params()
+        snid_params = self._snid_default_params()
+        ngsf_params  = self._ngsf_default_params()
+
+        classification_cfg = self.config.get("classification", {})
+        enabled = classification_cfg.get("enabled_classifiers", ["snid", "ngsf"])
+
         results = []
-        
+
         for obj_id in obj_names:
             spec_info = spectrum_map.get(str(obj_id))
             if not spec_info:
-                logger.warning(f"[classification_api] No spectrum info for {obj_id}")
+                logger.warning(f"[classifiers] No spectrum info for {obj_id}")
                 continue
-            
-            spath = spec_info['filepath']
-            tides_specid = spec_info['tides_specid']
-            
-            try:
-                logger.info(f"[classification_api] SNID classify obj={obj_id} tides_specid={tides_specid} path={spath}")
-                res = self.snid.classify(spath, night, obj_id, tides_specid=tides_specid, snid_params=params)
-                results.append({"obj_id": obj_id, "tides_specid": tides_specid, "snid": res})
-            except Exception as e:
-                logger.exception(f"[classification_api] SNID failed for {obj_id}: {e}")
-        
+
+            spath        = spec_info["filepath"]
+            tides_specid = spec_info["tides_specid"]
+            entry: dict  = {"obj_id": obj_id, "tides_specid": tides_specid}
+
+            if "snid" in enabled:
+                try:
+                    logger.info(f"[snid] classify obj={obj_id} tides_specid={tides_specid} path={spath}")
+                    entry["snid"] = self.snid.classify(
+                        spath, night, obj_id,
+                        tides_specid=tides_specid,
+                        snid_params=snid_params,
+                    )
+                except Exception as e:
+                    logger.exception(f"[snid] Failed for {obj_id}: {e}")
+                    entry["snid"] = {"status": "error", "message": str(e)}
+
+            if "ngsf" in enabled:
+                try:
+                    logger.info(f"[ngsf] classify obj={obj_id} tides_specid={tides_specid} path={spath}")
+                    entry["ngsf"] = self.ngsf.classify(
+                        spath, night, obj_id,
+                        tides_specid=tides_specid,
+                        ngsf_params=ngsf_params,
+                    )
+                except Exception as e:
+                    logger.exception(f"[ngsf] Failed for {obj_id}: {e}")
+                    entry["ngsf"] = {"status": "error", "message": str(e)}
+
+            results.append(entry)
+
         return results
 
     def run(self, night=None, objects=None, one_shot: bool = False, sleep_seconds: int = 60, env: str = "operations"):
@@ -539,8 +580,8 @@ class PipelineManager:
                         logger.warning(f"[{name}] No objects to classify (obj_names empty)")
                         self.set_module_done(name, True)
                         continue
-                    results = self._run_snid_classification(self.current_night, obj_names, spectrum_map, logger)
-                    logger.info(f"[{name}] SNID classified {len(results)} objects")
+                    results = self._run_classifiers(self.current_night, obj_names, spectrum_map, logger)
+                    logger.info(f"[{name}] Classified {len(results)} objects")
                     self._run_m25_combination(results, logger)
                     self.set_module_done(name, True)
                     continue
@@ -627,8 +668,8 @@ class PipelineManager:
             lg.warning(f"[classify_night] No spectra found for night={night}")
             return {"night": night, "count": 0, "results": []}
 
-        results = self._run_snid_classification(self.current_night, obj_names, spectrum_map, lg)
-        lg.info(f"[classify_night] SNID finished for {len(results)} objects")
+        results = self._run_classifiers(self.current_night, obj_names, spectrum_map, lg)
+        lg.info(f"[classify_night] Classification finished for {len(results)} objects")
         self._run_m25_combination(results, lg)
         self.set_module_done("classification_api", True)
         return {"night": night, "count": len(results), "results": results}

@@ -7,8 +7,13 @@ SNID_URL = os.getenv("CLASSIFIER_SNID_URL", "http://snid_api:8000").rstrip("/")
 SNID_ENDPOINT = os.getenv("CLASSIFIER_SNID_ENDPOINT", "/classify")
 SNID_UPLOAD = os.getenv("CLASSIFIER_SNID_UPLOAD", "1") not in ("0", "false", "False")
 
-NGSF_URL = os.getenv("CLASSIFIER_NGSF_URL", "http://ngsf_api:8000").rstrip("/")
+NGSF_URL = (
+    os.getenv("CLASSIFIER_NGSF_URL")
+    or os.getenv("NGSF_API_URL")
+    or "http://192.168.10.117:8001"
+).rstrip("/")
 NGSF_ENDPOINT = os.getenv("CLASSIFIER_NGSF_ENDPOINT", "/ngsf_params/")
+NGSF_OUT_ROOT = os.getenv("NGSF_API_OUT_ROOT", "/ngsf_api_runs")
 
 TIMEOUT = float(os.getenv("CLASSIFIER_HTTP_TIMEOUT", "180"))
 RETRIES = int(os.getenv("CLASSIFIER_HTTP_RETRIES", "3"))
@@ -44,14 +49,28 @@ async def classify_snid_async(tides_id: int, spectrum_path: str, params: Optiona
         resp = await _post_with_retries(client, url, json=payload)
         return resp.json()
 
-async def classify_ngsf_async(tides_id: int, spectrum_path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+async def classify_ngsf_async(
+    tides_id: int,
+    spectrum_path: str,
+    output_dir: str,
+    params: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
-    NGSF API you showed expects JSON (Params) and reads a file from its working dir.
-    Pass the basename by default; ensure the spectra dir is mounted into the NGSF container's working dir.
+    Call the shared-services NGSF API (POST /ngsf_params/).
+
+    The real Params model requires:
+      - ``spectrum``   : full path to the spectrum file (readable by the API container)
+      - ``output_dir`` : per-spectrum output dir under /ngsf_api_runs (API enforces this)
+    All other NGSF tuning knobs are passed via *params*.
+
+    Response: {"success": True, "data": {"file_path": "...", "table": [{...}, ...]}}
     """
     url = NGSF_URL + NGSF_ENDPOINT
-    file_for_api = os.path.basename(spectrum_path)
-    payload = {"file": file_for_api, **(params or {})}
+    payload: Dict[str, Any] = {
+        "spectrum":   spectrum_path,
+        "output_dir": output_dir,
+        **(params or {}),
+    }
     async with httpx.AsyncClient() as client:
         resp = await _post_with_retries(client, url, json=payload)
         return resp.json()

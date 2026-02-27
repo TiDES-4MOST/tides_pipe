@@ -11,13 +11,7 @@ classification:
   max: 5
   enabled_classifiers:  # Which classifiers to run
     - snid
-    #- ngsf
-    # - qxp  # Add qxp when available
-  codes:
-    - code: "snid"
-      config_file: "/path/to/snid/config.yml"
-    - code: "ngsf"
-      config_file: "/path/to/other_code/config.yml"
+    - ngsf
 db_creds:
   host: "localhost"
   port: 5432
@@ -66,3 +60,20 @@ snid:
       - "IIL"
       - "M-star"
       - "AGN"
+
+ngsf:
+  defaults:
+    z: 0.0
+    z_min: 0.0
+    z_max: 0.1
+    z_int: 0.01
+    lower_lam: 0.0
+    upper_lam: 0.0
+    epoch_low: 0
+    epoch_high: 0
+    alam_low: -2.0
+    alam_high: 2.0
+    alam_interval: 0.2
+    resolution: 20
+    mask_telluric: true
+    mask_galaxy: true
