@@ -12,6 +12,13 @@ classification:
   enabled_classifiers:  # Which classifiers to run
     - snid
     - ngsf
+  combiner: tom  # 'tom' (fine-grained TidesClass FKs) or 'm25' (coarse, default)
+
+tom_combiner:
+  # Path to the classification mapping tables.
+  # On prod/test VMs, mount an override via Docker volume if needed.
+  # Defaults to config/tom_combiner_config.yml relative to this file.
+  config_file: /app/config/tom_combiner_config.yml
 db_creds:
   host: "localhost"
   port: 5432

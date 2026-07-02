@@ -31,6 +31,17 @@ from typing import Any, Dict, Optional
 
 log = logging.getLogger("tides_m25")
 
+# Maps M25 coarse output classes to canonical tides_class.name values.
+# Used to populate tidesclass_id in pipeline_classification_global.
+_M25_TO_TIDESCLASS: Dict[str, str] = {
+    "Ia":    "SNIa",
+    "Ibc":   "SNIbc",
+    "II":    "SNII",
+    "SL":    "SLSN-I",
+    "Non":   "Other",
+    "other": "Other",
+}
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -204,6 +215,22 @@ def store_global(
     phase     = result.get("phase")
     notes     = result.get("notes", "")
 
+    # Resolve tidesclass_id from tides_class table (M25 produces coarse classes).
+    tidesclass_id: Optional[int] = None
+    canonical_name = _M25_TO_TIDESCLASS.get(sn_type or "")
+    if canonical_name:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM tides_class WHERE name = %s LIMIT 1",
+                    (canonical_name,),
+                )
+                row = cur.fetchone()
+                if row:
+                    tidesclass_id = row[0]
+        except Exception as e:
+            lg.debug(f"[m25] tidesclass lookup failed for {canonical_name!r}: {e}")
+
     try:
         with conn:
             with conn.cursor() as cur:
@@ -211,48 +238,52 @@ def store_global(
                     cur.execute(
                         """
                         INSERT INTO pipeline_classification_global
-                            (tides_specid, tides_id, sn_type, probability, version, z, zerr, phase, notes)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            (tides_specid, tides_id, sn_type, tidesclass_id,
+                             probability, version, z, zerr, phase, notes)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (tides_specid) DO UPDATE SET
-                            tides_id    = EXCLUDED.tides_id,
-                            sn_type     = EXCLUDED.sn_type,
-                            probability = EXCLUDED.probability,
-                            version     = EXCLUDED.version,
-                            z           = EXCLUDED.z,
-                            zerr        = EXCLUDED.zerr,
-                            phase       = EXCLUDED.phase,
-                            notes       = EXCLUDED.notes
+                            tides_id      = EXCLUDED.tides_id,
+                            sn_type       = EXCLUDED.sn_type,
+                            tidesclass_id = EXCLUDED.tidesclass_id,
+                            probability   = EXCLUDED.probability,
+                            version       = EXCLUDED.version,
+                            z             = EXCLUDED.z,
+                            zerr          = EXCLUDED.zerr,
+                            phase         = EXCLUDED.phase,
+                            notes         = EXCLUDED.notes
                         """,
-                        (int(tides_specid), int(tides_id), sn_type, prob, version, z, zerr, phase, notes),
+                        (int(tides_specid), int(tides_id), sn_type, tidesclass_id,
+                         prob, version, z, zerr, phase, notes),
                     )
                     lg.info(
                         f"[m25] Upserted pipeline_classification_global "
                         f"tides_id={tides_id} tides_specid={tides_specid} "
-                        f"class={sn_type} prob={prob:.3f}" if prob else
-                        f"[m25] Upserted pipeline_classification_global "
-                        f"tides_id={tides_id} tides_specid={tides_specid} class={sn_type}"
+                        f"class={sn_type} tidesclass_id={tidesclass_id} prob={prob}"
                     )
                 else:
                     # No tides_specid: upsert on tides_id (legacy fallback)
                     cur.execute(
                         """
                         INSERT INTO pipeline_classification_global
-                            (tides_id, sn_type, probability, version, z, zerr, phase, notes)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            (tides_id, sn_type, tidesclass_id,
+                             probability, version, z, zerr, phase, notes)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (tides_id) DO UPDATE SET
-                            sn_type     = EXCLUDED.sn_type,
-                            probability = EXCLUDED.probability,
-                            version     = EXCLUDED.version,
-                            z           = EXCLUDED.z,
-                            zerr        = EXCLUDED.zerr,
-                            phase       = EXCLUDED.phase,
-                            notes       = EXCLUDED.notes
+                            sn_type       = EXCLUDED.sn_type,
+                            tidesclass_id = EXCLUDED.tidesclass_id,
+                            probability   = EXCLUDED.probability,
+                            version       = EXCLUDED.version,
+                            z             = EXCLUDED.z,
+                            zerr          = EXCLUDED.zerr,
+                            phase         = EXCLUDED.phase,
+                            notes         = EXCLUDED.notes
                         """,
-                        (int(tides_id), sn_type, prob, version, z, zerr, phase, notes),
+                        (int(tides_id), sn_type, tidesclass_id,
+                         prob, version, z, zerr, phase, notes),
                     )
                     lg.info(
                         f"[m25] Upserted pipeline_classification_global (tides_id-only) "
-                        f"tides_id={tides_id} class={sn_type}"
+                        f"tides_id={tides_id} class={sn_type} tidesclass_id={tidesclass_id}"
                     )
     except Exception as e:
         lg.error(f"[m25] Failed to upsert pipeline_classification_global for tides_id={tides_id}: {e}")

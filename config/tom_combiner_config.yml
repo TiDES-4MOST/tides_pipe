@@ -1,0 +1,124 @@
+# tom_combiner_config.yml
+#
+# Mapping tables for the TOM fine-grained classification combiner.
+# Edit this file to add new raw classifier strings without touching Python code.
+# Mounted into the container via docker-compose volumes.
+#
+# raw_to_tidesclass:
+#   Maps raw sn_type strings (as written by SNID, NGSF, DASH, SIREN) to
+#   canonical tides_class.name values stored in the Django DB.
+#
+# raw_to_subclass:
+#   Maps (tidesclass_name, raw_sn_type) pairs to tides_class_subclass.sub_class.
+#   Use null to explicitly indicate "no subclass expected".
+#   Format: "ClassName|raw_string": "sub_class name"
+#
+# template_subclass_hints:
+#   List of {pattern, tidesclass, subclass} entries.
+#   Applied against SNID best_template strings when the sn_type lookup alone
+#   doesn't yield a subclass.  First matching entry wins.  Case-insensitive.
+
+raw_to_tidesclass:
+  # SNID broad types (from 'use' list in config)
+  Ia:       SNIa
+  Ib:       SNIb
+  Ic:       SNIc
+  II:       SNII
+  NotSN:    Other
+
+  # SNID sub-types (from 'usesub' list in config)
+  Ia-norm:  SNIa
+  Ia-91bg:  SNIa
+  Ia-91T:   SNIa
+  Ia-pec:   SNIa
+  Ia-csm:   SNIa
+  Ib-norm:  SNIb
+  Ib-pec:   SNIb
+  Ic-norm:  SNIc
+  Ic-broad: SNIc
+  IIn:      SNII
+  IIP:      SNII
+  IIL:      SNII
+  IIb:      SNII
+  II-pec:   SNII
+  Ibc:      SNIbc    # NGSF / DASH coarse
+  AGN:      AGN
+  LBV:      LBV
+  M-star:   Other
+  Gal:      Other
+
+  # NGSF / M25 coarse classes
+  SL:       SLSN-I
+  Non:      Other
+  other:    Other
+
+  # Direct canonical pass-throughs
+  SNIa:     SNIa
+  SNIb:     SNIb
+  SNIc:     SNIc
+  SNIbc:    SNIbc
+  SNII:     SNII
+  SLSN-I:   SLSN-I
+  SLSN-II:  SLSN-II
+  TDE:      TDE
+  KN:       KN
+  CV:       CV
+  LRN:      LRN
+  Other:    Other
+
+# Format: "TidesClassName|raw_sn_type": sub_class value (null = no subclass)
+raw_to_subclass:
+  "SNIa|Ia-norm":  SNIa-norm
+  "SNIa|Ia-91bg":  SNIa-91bg-like
+  "SNIa|Ia-91T":   SNIa-91T-like
+  "SNIa|Ia-02cx":  SNIa-02cx-like
+  "SNIa|Ia-03fg":  SNIa-03fg-like
+  "SNIa|Ia-csm":   null
+  "SNIa|Ia-pec":   null
+  "SNII|IIn":      SNIIn
+  "SNII|IIb":      SNIIb
+  "SNIb|Ib-CaST":  SNIb-CaST
+  "SNIb|Ib-n":     SNIbn
+  "SNIc|Ic-n":     SNIcn
+  "TDE|TDE H":     TDE-H
+  "TDE|TDE He":    TDE-He
+  "TDE|TDE H+He":  TDE-H+He
+  "TDE|TDE-H":     TDE-H
+  "TDE|TDE-He":    TDE-He
+  "TDE|TDE-H+He":  TDE-H+He
+  "TDE|TDE-Featureless": TDE-Featureless
+  "TDE|TDE-BFF":   TDE-BFF
+
+# Template-name substring hints for SNID best_template strings.
+# Each entry: {pattern: <substring>, tidesclass: <class name>, subclass: <sub_class>}
+template_subclass_hints:
+  - pattern: "91bg"
+    tidesclass: SNIa
+    subclass: SNIa-91bg-like
+  - pattern: "91T"
+    tidesclass: SNIa
+    subclass: SNIa-91T-like
+  - pattern: "02cx"
+    tidesclass: SNIa
+    subclass: SNIa-02cx-like
+  - pattern: "03fg"
+    tidesclass: SNIa
+    subclass: SNIa-03fg-like
+  - pattern: "super_chandra"
+    tidesclass: SNIa
+    subclass: SNIa-03fg-like
+  - pattern: "CaST"
+    tidesclass: SNIb
+    subclass: SNIb-CaST
+  - pattern: "-IIn"
+    tidesclass: SNII
+    subclass: SNIIn
+  - pattern: "_IIn"
+    tidesclass: SNII
+    subclass: SNIIn
+  - pattern: "-IIb"
+    tidesclass: SNII
+    subclass: SNIIb
+  - pattern: "_IIb"
+    tidesclass: SNII
+    subclass: SNIIb

@@ -19,6 +19,7 @@ from tides_pipe.modules.classifiers.ngsf_defaults import ngsf_params_from_config
 from tides_pipe.modules.classifiers.client import classify_snid_async, classify_ngsf_async
 from tides_pipe.modules.classifiers.classification_store import save_result
 from tides_pipe.modules.classifiers.m25_combiner import combine as m25_combine, store_global as m25_store_global
+from tides_pipe.modules.classifiers.tom_combiner import combine as tom_combine, store_global as tom_store_global
 from tides_pipe.utils.paths import spectra_night_dir as util_spectra_night_dir, spectrum_path as util_spectrum_path
 from tides_pipe.utils.slack import send_slack_message
 
@@ -394,40 +395,63 @@ class PipelineManager:
 
     def _run_m25_combination(self, classification_results: list[dict], logger: logging.Logger) -> None:
         """
-        Run the Milligan+25 combiner for each object that has at least one
-        classifier result and upsert the combined output to
+        Run the configured combiner for each object and upsert to
         pipeline_classification_global.
 
-        classification_results: list of dicts produced by _run_snid_classification:
-            [{obj_id, tides_specid, snid: {...}, ngsf: {...}, dash: {...}}]
-        Each classifier key is optional — M25 handles missing classifiers gracefully.
+        Combiner is selected via ``classification.combiner`` in config.yml:
+            ``m25``   (default) — Milligan+25 coarse classes, sets tidesclass_id
+            ``tides``           — fine-grained, sets tidesclass_id + tidesclass_subclass_id
+
+        classification_results: list of dicts:
+            [{obj_id, tides_specid, snid: {...}, ngsf: {...}, dash: {...}, siren: {...}}]
         """
         conn = self._get_db_connection()
         if not conn:
-            logger.warning("[m25] No DB connection; skipping M25 combination")
+            logger.warning("[combiner] No DB connection; skipping combination step")
             return
 
+        combiner_name = (self.config.get("classification") or {}).get("combiner", "m25").lower()
+        tom_cfg_path  = (self.config.get("tom_combiner") or {}).get("config_file")
         version = ((self.config.get("snid") or {}).get("defaults") or {}).get("version") or ""
 
         for item in classification_results:
-            obj_id      = item.get("obj_id")
+            obj_id       = item.get("obj_id")
             tides_specid = item.get("tides_specid")
             try:
-                combined = m25_combine(
-                    snid=item.get("snid"),
-                    ngsf=item.get("ngsf"),
-                    dash=item.get("dash"),
-                )
-                logger.info(
-                    f"[m25] obj={obj_id} specid={tides_specid} "
-                    f"→ {combined['sn_type']} ({combined.get('probability')}) | {combined['notes']}"
-                )
-                m25_store_global(
-                    conn, int(obj_id), tides_specid, combined,
-                    version=version, logger=logger
-                )
+                if combiner_name == "tom":
+                    combined = tom_combine(
+                        snid=item.get("snid"),
+                        ngsf=item.get("ngsf"),
+                        dash=item.get("dash"),
+                        siren=item.get("siren"),
+                        config_path=tom_cfg_path,
+                    )
+                    logger.info(
+                        f"[tom_combiner] obj={obj_id} specid={tides_specid} "
+                        f"→ {combined['tidesclass_name']} / {combined['tidesclass_subclass_name']} "
+                        f"({combined.get('probability')}) | {combined['notes']}"
+                    )
+                    tom_store_global(
+                        conn, int(obj_id), tides_specid, combined,
+                        version=version, logger=logger,
+                    )
+                else:
+                    # Default: M25
+                    combined = m25_combine(
+                        snid=item.get("snid"),
+                        ngsf=item.get("ngsf"),
+                        dash=item.get("dash"),
+                    )
+                    logger.info(
+                        f"[m25] obj={obj_id} specid={tides_specid} "
+                        f"→ {combined['sn_type']} ({combined.get('probability')}) | {combined['notes']}"
+                    )
+                    m25_store_global(
+                        conn, int(obj_id), tides_specid, combined,
+                        version=version, logger=logger,
+                    )
             except Exception as e:
-                logger.error(f"[m25] Failed for obj={obj_id}: {e}", exc_info=True)
+                logger.error(f"[{combiner_name}] Failed for obj={obj_id}: {e}", exc_info=True)
 
     # Defaults aligned with your Django SnidParamsForm
     def _snid_default_params(self) -> dict:
