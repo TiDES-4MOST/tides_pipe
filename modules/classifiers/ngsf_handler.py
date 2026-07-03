@@ -517,6 +517,21 @@ class NgsfHandler:
         }
         payload.update({k: v for k, v in params.items() if v is not None})
 
+        # NGSF requires an exact redshift (z_min == z_max) when mask_galaxy=True.
+        # When doing a redshift range search, disable galaxy masking automatically.
+        z_min = payload.get("z_min")
+        z_max = payload.get("z_max")
+        if payload.get("mask_galaxy") and z_min is not None and z_max is not None:
+            try:
+                if float(z_min) != float(z_max):
+                    payload["mask_galaxy"] = False
+                    self.log.info(
+                        f"[ngsf] mask_galaxy disabled: z_min={z_min} != z_max={z_max} "
+                        "(NGSF requires exact z to mask galaxy lines)"
+                    )
+            except (TypeError, ValueError):
+                pass
+
         self.log.info(
             "[ngsf] Preflight: "
             f"spectrum_exists={os.path.exists(spectrum_path)} "
