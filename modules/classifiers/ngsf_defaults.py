@@ -28,7 +28,7 @@ def ngsf_params_from_config(
         # Redshift search window
         "z":            float(g("z",            0.0)),
         "z_min":        float(g("z_min",        0.0)),
-        "z_max":        float(g("z_max",        0.1)),
+        "z_max":        float(g("z_max",        1)),
         "z_int":        float(g("z_int",        0.01)),
         # Wavelength window (0.0 = use full range)
         "lower_lam":    float(g("lower_lam",    0.0)),

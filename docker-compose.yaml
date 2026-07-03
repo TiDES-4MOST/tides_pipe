@@ -28,6 +28,7 @@ services:
       - /mnt/api_results/snid_api_runs:/snid_api_runs:rw
       - /mnt/api_results/ngsf_api_runs:/ngsf_api_runs:rw
       - ./config/config.yml:/app/tides_pipe/config/config.yml:ro
+      - ./config/tom_combiner_config.yml:/app/config/tom_combiner_config.yml:ro
     ports:
       - "8001:8001"  # uvicorn port for ingest_api
     command: >

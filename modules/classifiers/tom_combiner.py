@@ -347,20 +347,29 @@ def store_global(
     tidesclass_name      = result.get("tidesclass_name")
     subclass_name        = result.get("tidesclass_subclass_name")
 
+    # Ensure the connection is in a clean state before we start.
+    # A previous failed query on the same connection leaves psycopg2 in an
+    # aborted-transaction state; all subsequent commands fail until rollback.
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+
     # Resolve tidesclass_id
     tidesclass_id: Optional[int] = None
     if tidesclass_name:
         try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id FROM tides_class WHERE name = %s LIMIT 1",
-                    (tidesclass_name,),
-                )
-                row = cur.fetchone()
-                if row:
-                    tidesclass_id = row[0]
-                else:
-                    lg.debug(f"[tom_combiner] No tides_class row for name={tidesclass_name!r}")
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id FROM tides_class WHERE name = %s LIMIT 1",
+                        (tidesclass_name,),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        tidesclass_id = row[0]
+                    else:
+                        lg.debug(f"[tom_combiner] No tides_class row for name={tidesclass_name!r}")
         except Exception as e:
             lg.debug(f"[tom_combiner] tidesclass lookup failed: {e}")
 
@@ -368,20 +377,21 @@ def store_global(
     tidesclass_subclass_id: Optional[int] = None
     if subclass_name and tidesclass_id is not None:
         try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """SELECT id FROM tides_class_subclass
-                        WHERE main_class_id = %s AND sub_class = %s LIMIT 1""",
-                    (tidesclass_id, subclass_name),
-                )
-                row = cur.fetchone()
-                if row:
-                    tidesclass_subclass_id = row[0]
-                else:
-                    lg.debug(
-                        f"[tom_combiner] No subclass row for "
-                        f"main_class_id={tidesclass_id} sub_class={subclass_name!r}"
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """SELECT id FROM tides_class_subclass
+                            WHERE main_class_id = %s AND sub_class = %s LIMIT 1""",
+                        (tidesclass_id, subclass_name),
                     )
+                    row = cur.fetchone()
+                    if row:
+                        tidesclass_subclass_id = row[0]
+                    else:
+                        lg.debug(
+                            f"[tom_combiner] No subclass row for "
+                            f"main_class_id={tidesclass_id} sub_class={subclass_name!r}"
+                        )
         except Exception as e:
             lg.debug(f"[tom_combiner] subclass lookup failed: {e}")
 
